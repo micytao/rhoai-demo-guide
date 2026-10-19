@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MLflow Tracing Setup — Animated Flow</title>
+<link rel="stylesheet" href="https://noyitz.github.io/flowstory/templates/style.css">
+</head>
+<body>
+<button class="fs-theme-toggle" id="fs-theme">&#9790;</button>
+<div class="fs-brand" id="fs-brand"></div>
+<div class="fs-title" id="fs-title"></div>
+<div class="fs-panel">
+  <div class="fs-flow-bar">
+    <select id="fs-flow-select"></select>
+    <button class="fs-start" id="fs-play">&#9654; Start</button>
+    <button id="fs-speed">1x</button>
+    <button id="fs-loop">&#8635; Loop</button>
+    <button class="fs-reset" id="fs-reset">Reset</button>
+  </div>
+  <div class="fs-steps" id="fs-steps">
+    <div class="fs-steps-title">Flow Steps</div>
+    <div id="fs-steps-container"></div>
+  </div>
+</div>
+<div id="fs-highlight-box" style="display:none;position:fixed;z-index:350;border-radius:10px;pointer-events:none"></div>
+<div id="fs-overlay" onclick="if(event.target===this)window.__flowstory?.closeOverlay()" style="display:none;position:fixed;top:0;left:0;right:380px;bottom:0;z-index:300;background:rgba(0,0,0,0.6)">
+  <div id="fs-overlay-card" style="position:absolute;background:#161b22ee;border:1px solid #30363d;border-radius:14px;max-width:440px;padding:22px 26px;box-shadow:0 12px 40px rgba(0,0,0,0.5);transition:opacity .2s">
+    <button onclick="window.__flowstory?.closeOverlay()" style="position:absolute;top:10px;right:14px;background:none;border:none;color:#8b949e;font-size:18px;cursor:pointer;padding:4px 8px;border-radius:6px">&#10005;</button>
+    <div id="fs-overlay-accent" style="width:4px;height:24px;border-radius:2px;position:absolute;left:0;top:22px"></div>
+    <h2 id="fs-overlay-title" style="margin:0 0 6px;font-size:18px;color:#c9d1d9;font-family:system-ui"></h2>
+    <p id="fs-overlay-desc" style="margin:0 0 14px;font-size:13px;color:#8b949e;line-height:1.5;font-family:system-ui"></p>
+    <div id="fs-overlay-details" style="font-size:12px;font-family:'SF Mono',Menlo,monospace"></div>
+    <button onclick="window.__flowstory?.closeOverlay()" style="margin-top:14px;padding:7px 20px;border:1px solid #3fb950;border-radius:8px;background:transparent;color:#3fb950;font-size:13px;cursor:pointer;font-family:system-ui">&#9654; Resume Flow</button>
+  </div>
+</div>
+<div class="fs-legend" id="fs-legend"></div>
+<canvas id="fs-canvas"></canvas>
+<script type="module">
+import { FlowStory } from 'https://noyitz.github.io/flowstory/src/index.js';
+
+const viz = new FlowStory(document.getElementById('fs-canvas'), {
+  panelElement: document.querySelector('.fs-panel'),
+  flowSelect: document.getElementById('fs-flow-select'),
+  playBtn: document.getElementById('fs-play'),
+  speedBtn: document.getElementById('fs-speed'),
+  loopBtn: document.getElementById('fs-loop'),
+  resetBtn: document.getElementById('fs-reset'),
+  stepsContainer: document.getElementById('fs-steps-container'),
+  overlayElement: document.getElementById('fs-overlay'),
+  overlayCard: document.getElementById('fs-overlay-card'),
+  overlayTitle: document.getElementById('fs-overlay-title'),
+  overlayDesc: document.getElementById('fs-overlay-desc'),
+  overlayDetails: document.getElementById('fs-overlay-details'),
+  overlayAccent: document.getElementById('fs-overlay-accent'),
+  highlightBox: document.getElementById('fs-highlight-box'),
+  brandElement: document.getElementById('fs-brand'),
+  titleElement: document.getElementById('fs-title'),
+  legendElement: document.getElementById('fs-legend'),
+  themeBtn: document.getElementById('fs-theme')
+});
+
+window.__flowstory = viz;
+
+const diagram = {
+  "meta": {
+    "title": "MLflow Tracing Setup \u2014 Animated Flow",
+    "author": "rhoai-demo-guide",
+    "branding": {
+      "logo": "",
+      "title": "RHOAI GenAI Studio \u2014 MLflow Tracing"
+    }
+  },
+  "canvas": { "width": 1400, "height": 850 },
+  "nodes": {
+    "admin":  { "x": -40, "y": 220, "w": 120, "h": 50, "label": "Admin / CLI", "type": "icon" },
+    "user":   { "x": -40, "y": 520, "w": 120, "h": 50, "label": "User",  "type": "icon" },
+
+    "cluster": { "x": 100, "y": 20, "w": 1270, "h": 810, "type": "boundary", "label": "OpenShift Cluster \u00b7 RHOAI 3.5+ \u00b7 GenAI Studio" },
+
+    "c1_mlflow": { "x": 130, "y": 60, "w": 340, "h": 280, "type": "container", "label": "\u2460 Phase 1: MLflow Setup", "color": "#58a6ff" },
+    "n_dsc":       { "x": 150, "y": 100, "w": 145, "h": 36, "label": "DSC", "sublabel": "mlflowoperator: Managed", "color": "#58a6ff", "fontSize": 11 },
+    "n_mlflow_crd": { "x": 310, "y": 100, "w": 140, "h": 36, "label": "MLflow CRD", "color": "#58a6ff", "fontSize": 12 },
+    "n_mlflow_cr": { "x": 150, "y": 155, "w": 145, "h": 50, "label": "MLflow CR", "sublabel": "name: mlflow (singleton)", "color": "#58a6ff", "fontSize": 13 },
+    "n_mlflow_pod": { "x": 310, "y": 155, "w": 140, "h": 50, "label": "MLflow Pod", "sublabel": "redhat-ods-applications", "color": "#58a6ff", "fontSize": 12 },
+    "n_experiment": { "x": 195, "y": 225, "w": 210, "h": 44, "label": "Experiment", "sublabel": "guardrails-playground (ID=1)", "color": "#58a6ff", "fontSize": 13 },
+
+    "c2_playground": { "x": 130, "y": 370, "w": 340, "h": 340, "type": "container", "label": "\u2461 Phase 2: Playground (OGX) Tracing", "color": "#3fb950" },
+    "n_ogxserver":    { "x": 150, "y": 410, "w": 145, "h": 40, "label": "OGXServer", "sublabel": "lsd-genai-playground", "color": "#3fb950", "fontSize": 11 },
+    "n_pgnd_sa":      { "x": 310, "y": 410, "w": 140, "h": 40, "label": "Playground SA", "sublabel": "edit role", "color": "#3fb950", "fontSize": 11 },
+    "n_otel_secret":  { "x": 150, "y": 468, "w": 145, "h": 44, "label": "Auth Secret", "sublabel": "otel-mlflow-auth", "color": "#3fb950", "fontSize": 12 },
+    "n_svc_ca":       { "x": 310, "y": 468, "w": 140, "h": 44, "label": "Service-CA Vol", "sublabel": "service-ca.crt", "color": "#3fb950", "fontSize": 11 },
+    "n_otel_wrap":    { "x": 150, "y": 530, "w": 300, "h": 40, "label": "opentelemetry-instrument ogx run ...", "sublabel": "command wrapper", "color": "#3fb950", "fontSize": 11 },
+    "n_otel_env":     { "x": 150, "y": 585, "w": 300, "h": 48, "label": "OTEL Env Vars (11 vars)", "sublabel": "endpoint + headers + content capture + noise filter", "color": "#3fb950", "fontSize": 11 },
+    "n_pgnd_disabled": { "x": 150, "y": 648, "w": 300, "h": 40, "label": "23 instrumentors disabled", "sublabel": "keeps openai-v2 + fastapi only", "color": "#3fb950", "fontSize": 10 },
+
+    "c3_guardrails": { "x": 500, "y": 370, "w": 340, "h": 340, "type": "container", "label": "\u2462 Phase 3: NemoGuardrails Tracing", "color": "#d2a8ff" },
+    "n_ngr_cr":       { "x": 520, "y": 410, "w": 145, "h": 40, "label": "NemoGuardrails CR", "sublabel": "spec.env patched", "color": "#d2a8ff", "fontSize": 11 },
+    "n_ngr_sa":       { "x": 680, "y": 410, "w": 140, "h": 40, "label": "NemoGuardrails SA", "sublabel": "edit role", "color": "#d2a8ff", "fontSize": 11 },
+    "n_ngr_secret":   { "x": 520, "y": 468, "w": 145, "h": 44, "label": "Auth Secret", "sublabel": "nemoguardrails-otel-auth", "color": "#d2a8ff", "fontSize": 11 },
+    "n_apikey":       { "x": 680, "y": 468, "w": 140, "h": 44, "label": "API Key Secret", "sublabel": "nemoguardrails-api-key", "color": "#d2a8ff", "fontSize": 11 },
+    "n_ngr_cmd":      { "x": 520, "y": 530, "w": 300, "h": 40, "label": "PYTHONPATH \u2192 sitecustomize.py", "sublabel": "auto-inits OTEL SDK at startup (operator-proof)", "color": "#d2a8ff", "fontSize": 11 },
+    "n_ngr_env":      { "x": 520, "y": 585, "w": 300, "h": 48, "label": "OTEL Env Vars (10 vars)", "sublabel": "endpoint + headers + Debian cert path", "color": "#d2a8ff", "fontSize": 11 },
+    "n_tracing_cfg":  { "x": 520, "y": 648, "w": 300, "h": 40, "label": "tracing: enabled + OpenTelemetry adapter", "sublabel": "guardrail-placeholder ConfigMap", "color": "#d2a8ff", "fontSize": 10 },
+
+    "c_runtime": { "x": 870, "y": 60, "w": 470, "h": 640, "type": "container", "label": "Runtime: Trace Flow", "color": "#ffa657" },
+    "n_playground":   { "x": 900, "y": 110, "w": 180, "h": 55, "label": "OGX Playground", "sublabel": "Llama Stack + openai-v2", "color": "#3fb950", "fontSize": 14 },
+    "n_guardrails":   { "x": 1120, "y": 110, "w": 180, "h": 55, "label": "NemoGuardrails", "sublabel": "LLM-as-judge", "color": "#d2a8ff", "fontSize": 14 },
+    "n_maas":         { "x": 1010, "y": 210, "w": 180, "h": 50, "label": "MaaS Backend", "sublabel": "gpt-oss-20b", "color": "#79c0ff", "fontSize": 14 },
+    "n_mlflow":       { "x": 1010, "y": 310, "w": 180, "h": 65, "label": "MLflow Traces", "sublabel": "OTLP/HTTPS \u00b7 workspace=demo", "color": "#58a6ff", "fontSize": 15 },
+
+    "n_trace_pg":     { "x": 900, "y": 420, "w": 200, "h": 55, "label": "Playground Trace", "sublabel": "gen_ai.operation.name: chat", "color": "#3fb950", "fontSize": 12 },
+    "n_trace_input":  { "x": 1130, "y": 420, "w": 200, "h": 55, "label": "Input Rail Trace", "sublabel": "gen_ai.operation.name: self_check_input", "color": "#d2a8ff", "fontSize": 11 },
+    "n_trace_output": { "x": 1130, "y": 500, "w": 200, "h": 55, "label": "Output Rail Trace", "sublabel": "gen_ai.operation.name: self_check_output", "color": "#d2a8ff", "fontSize": 11 },
+
+    "n_content":      { "x": 900, "y": 500, "w": 200, "h": 55, "label": "Content Capture", "sublabel": "input_messages + output_messages", "color": "#ffa657", "fontSize": 12 },
+    "n_decision":     { "x": 960, "y": 590, "w": 350, "h": 55, "label": "Blocked vs Allowed", "sublabel": "blocked = only self_check_input \u00b7 allowed = input + output", "color": "#f85149", "fontSize": 12 },
+
+    "n_cert_rhel":  { "x": 900, "y": 735, "w": 200, "h": 50, "label": "RHEL cert path", "sublabel": "/etc/pki/tls/custom/service-ca.crt", "color": "#8b949e", "fontSize": 10 },
+    "n_cert_debian": { "x": 1130, "y": 735, "w": 200, "h": 50, "label": "Debian cert path", "sublabel": "/etc/ssl/certs/ca-certificates.crt", "color": "#8b949e", "fontSize": 10 }
+  },
+  "tooltips": {
+    "admin": {
+      "title": "Admin / CLI",
+      "description": "Runs setup-mlflow-tracing.sh to wire OTEL tracing from Playground and NemoGuardrails into MLflow. The script is idempotent \u2014 safe to run multiple times.",
+      "details": [
+        ["Script", "scripts/setup-mlflow-tracing.sh"],
+        ["Flags", "--namespace, --skip-mlflow, --skip-playground, --skip-guardrails, --dry-run"],
+        ["Requires", "oc CLI logged in with cluster-admin or project-admin"]
+      ]
+    },
+    "user": {
+      "title": "User",
+      "description": "Sends prompts through the RHOAI Dashboard Playground. Each interaction generates OTEL traces exported to MLflow for audit and debugging.",
+      "details": [
+        ["Interface", "RHOAI Dashboard \u2192 GenAI Studio \u2192 Playground"],
+        ["Traces", "Every prompt creates trace spans in MLflow"]
+      ]
+    },
+    "n_dsc": {
+      "title": "DataScienceCluster",
+      "description": "The mlflowoperator component must be set to Managed in the DSC. If it's Removed, the MLflow operator won't be installed and the CRD won't exist.",
+      "details": [
+        ["Check", "oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.mlflowoperator.managementState}'"],
+        ["Required value", "Managed"]
+      ]
+    },
+    "n_mlflow_crd": {
+      "title": "MLflow CRD",
+      "description": "Custom Resource Definition installed by the MLflow operator. Takes a few seconds to appear after enabling the operator. The script polls for up to 60 seconds.",
+      "details": [
+        ["CRD", "mlflows.mlflow.opendatahub.io"],
+        ["Check", "oc get crd mlflows.mlflow.opendatahub.io"]
+      ]
+    },
+    "n_mlflow_cr": {
+      "title": "MLflow CR (singleton)",
+      "description": "The MLflow instance. Has a mandatory singleton constraint \u2014 the name MUST be 'mlflow'. Any other name is rejected with a validation error.",
+      "details": [
+        ["Name", "mlflow (mandatory)"],
+        ["Backend", "sqlite:////mlflow/mlflow.db"],
+        ["Storage", "5Gi ReadWriteOnce"],
+        ["Workspace selector", "kubernetes.io/metadata.name: <namespace>"]
+      ]
+    },
+    "n_mlflow_pod": {
+      "title": "MLflow Pod",
+      "description": "Runs in redhat-ods-applications (not your project namespace). Uses --app-name=kubernetes-auth, validating SA tokens via the Kubernetes TokenReview API.",
+      "details": [
+        ["Namespace", "redhat-ods-applications"],
+        ["Auth", "kubernetes-auth (SA token validation)"],
+        ["Endpoint", "https://mlflow.redhat-ods-applications.svc:8443"]
+      ]
+    },
+    "n_experiment": {
+      "title": "MLflow Experiment",
+      "description": "A named container for traces within a workspace. Created via the MLflow API. The experiment ID is used in OTEL headers for all trace exports.",
+      "details": [
+        ["Name", "guardrails-playground"],
+        ["Workspace", "demo"],
+        ["Required header", "X-MLflow-Experiment-Id: <id>"]
+      ]
+    },
+    "n_ogxserver": {
+      "title": "OGXServer (Playground)",
+      "description": "The OGX Playground based on Llama Stack. Ships 25+ OTEL auto-instrumentation packages but they are dormant by default \u2014 no env vars set, no SDK initialization.",
+      "details": [
+        ["Name", "lsd-genai-playground"],
+        ["Base image", "RHEL (cert path differs from Debian)"],
+        ["OTEL packages", "25 installed, only openai-v2 + fastapi useful"]
+      ]
+    },
+    "n_pgnd_sa": {
+      "title": "Playground Service Account",
+      "description": "Needs the edit role in the namespace so MLflow's kubernetes-auth accepts its token. The mlflow-operator-mlflow-edit ClusterRole is aggregated into edit.",
+      "details": [
+        ["SA", "lsd-genai-playground-sa"],
+        ["Command", "oc adm policy add-role-to-user edit system:serviceaccount:<ns>:<sa> -n <ns>"]
+      ]
+    },
+    "n_otel_secret": {
+      "title": "OTEL Auth Secret",
+      "description": "Contains the OTEL_EXPORTER_OTLP_HEADERS value: a comma-separated string with the Bearer token, workspace name, and experiment ID. Keeps the token out of shell history.",
+      "details": [
+        ["Secret", "otel-mlflow-auth"],
+        ["Key", "header"],
+        ["Value format", "Authorization=Bearer <token>,X-MLflow-Workspace=demo,X-MLflow-Experiment-Id=1"],
+        ["Token duration", "~1 year (8760h)"]
+      ]
+    },
+    "n_svc_ca": {
+      "title": "Service-CA Certificate Volume",
+      "description": "MLflow's TLS cert is signed by the OpenShift service-CA, which is NOT in the RHEL system CA bundle. The config-service-cabundle ConfigMap (auto-maintained by OpenShift) is mounted as a volume.",
+      "details": [
+        ["ConfigMap", "config-service-cabundle"],
+        ["Key", "service-ca.crt"],
+        ["Mount path", "/etc/pki/tls/custom/service-ca.crt"],
+        ["Why needed", "OpenShift service-CA not in RHEL /etc/pki/tls/certs/ca-bundle.crt"]
+      ]
+    },
+    "n_otel_wrap": {
+      "title": "opentelemetry-instrument Wrapper",
+      "description": "OTEL env vars configure the SDK but do NOT initialize it. Without this wrapper, the TracerProvider is a no-op ProxyTracerProvider and no traces are generated. The wrapper creates a real TracerProvider with BatchSpanProcessor + OTLPSpanExporter.",
+      "details": [
+        ["Original", "ogx run /etc/ogx/config.yaml --insecure"],
+        ["Wrapped", "opentelemetry-instrument ogx run /etc/ogx/config.yaml --insecure"],
+        ["Patched via", "OGXServer spec.workload.overrides.command"]
+      ]
+    },
+    "n_otel_env": {
+      "title": "OTEL Environment Variables (Playground)",
+      "description": "11 env vars that configure the OTEL SDK: endpoint, protocol, auth headers, certificate, content capture, noise filtering, and exporter selection.",
+      "details": [
+        ["OTEL_SERVICE_NAME", "playground"],
+        ["OTEL_EXPORTER_OTLP_ENDPOINT", "https://mlflow.redhat-ods-applications.svc:8443"],
+        ["OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"],
+        ["OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental"],
+        ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "span_only (not event_only!)"],
+        ["OTEL_TRACES_EXPORTER", "otlp"],
+        ["OTEL_METRICS_EXPORTER", "none (MLflow has no metrics endpoint)"],
+        ["OTEL_LOGS_EXPORTER", "none"]
+      ]
+    },
+    "n_pgnd_disabled": {
+      "title": "Disabled Instrumentors",
+      "description": "The OGX pod ships 25 auto-instrumentation packages. Without filtering, every HTTP call, DB query, and template render creates noisy spans. Only openai-v2 (LLM calls) and fastapi (request lifecycle) are kept.",
+      "details": [
+        ["Disabled (23)", "asgi, asyncio, asyncpg, boto3sqs, botocore, click, dbapi, grpc, httpx, jinja2, logging, pymongo, redis, requests, sqlalchemy, sqlite3, starlette, system-metrics, threading, tortoiseorm, urllib, urllib3, wsgi"],
+        ["Kept (2)", "openai-v2, fastapi"]
+      ]
+    },
+    "n_ngr_cr": {
+      "title": "NemoGuardrails CR",
+      "description": "The CRD supports valueFrom.secretKeyRef in spec.env, so OTEL headers and the API key are injected securely. It also supports PYTHONPATH for auto-instrumentation.",
+      "details": [
+        ["Supports", "spec.env with valueFrom.secretKeyRef"],
+        ["SDK init", "PYTHONPATH triggers sitecustomize.py at Python startup"],
+        ["Env vars", "11 OTEL vars + OPENAI_API_KEY from secret + PYTHONPATH"]
+      ]
+    },
+    "n_ngr_sa": {
+      "title": "NemoGuardrails Service Account",
+      "description": "Same pattern as Playground SA: needs edit role for MLflow auth, plus the mlflow-operator-mlflow-edit ClusterRole.",
+      "details": [
+        ["SA", "nemoguardrails-serviceaccount"],
+        ["Roles", "edit (namespace) + mlflow-operator-mlflow-edit (cluster)"]
+      ]
+    },
+    "n_ngr_secret": {
+      "title": "NemoGuardrails Auth Secret",
+      "description": "Same format as the Playground auth secret but with a different SA token.",
+      "details": [
+        ["Secret", "nemoguardrails-otel-auth"],
+        ["Value format", "Authorization=Bearer <token>,X-MLflow-Workspace=demo,X-MLflow-Experiment-Id=1"]
+      ]
+    },
+    "n_apikey": {
+      "title": "MaaS API Key Secret",
+      "description": "NemoGuardrails needs a MaaS API key to call the model as a judge for self-check rails. The script migrates existing plaintext keys into a secret for secure injection.",
+      "details": [
+        ["Secret", "nemoguardrails-api-key"],
+        ["Key", "key"],
+        ["Used by", "OPENAI_API_KEY env var via secretKeyRef"]
+      ]
+    },
+    "n_ngr_cmd": {
+      "title": "PYTHONPATH Auto-Instrumentation",
+      "description": "Instead of wrapping the command with opentelemetry-instrument (which the TrustyAI operator reverts), PYTHONPATH is set via the CR's spec.env to point at the auto-instrumentation sitecustomize.py. Python loads it at startup, initializing the OTEL SDK \u2014 operator-proof.",
+      "details": [
+        ["PYTHONPATH", "/app/.venv/lib64/python3.12/site-packages/opentelemetry/instrumentation/auto_instrumentation"],
+        ["How it works", "Python loads sitecustomize.py from PYTHONPATH at startup"],
+        ["Why not command wrap?", "TrustyAI operator reverts deployment command patches"],
+        ["Set via", "CR spec.env (operator preserves it)"]
+      ]
+    },
+    "n_ngr_env": {
+      "title": "OTEL Environment Variables (NemoGuardrails)",
+      "description": "11 env vars including PYTHONPATH. Key difference from Playground: cert path is /etc/ssl/certs/ca-certificates.crt (Debian), only 3 instrumentors are disabled, and SDK is initialized via PYTHONPATH instead of command wrapper.",
+      "details": [
+        ["PYTHONPATH", "/app/.venv/lib64/.../auto_instrumentation (SDK init)"],
+        ["OTEL_SERVICE_NAME", "nemoguardrails"],
+        ["OTEL_EXPORTER_OTLP_CERTIFICATE", "/etc/ssl/certs/ca-certificates.crt (Debian)"],
+        ["OTEL_PYTHON_DISABLED_INSTRUMENTATIONS", "asgi, fastapi, httpx"],
+        ["Note", "Debian base image has ca-bundle-transfer init container"]
+      ]
+    },
+    "n_tracing_cfg": {
+      "title": "Tracing Configuration",
+      "description": "Added to the guardrail-placeholder ConfigMap's config.yaml. Tells NemoGuardrails to generate trace spans for rail evaluations and pipe them through the OpenTelemetry adapter.",
+      "details": [
+        ["tracing.enabled", "true"],
+        ["tracing.enable_content_capture", "true"],
+        ["tracing.adapters", "[{name: OpenTelemetry}]"]
+      ]
+    },
+    "n_playground": {
+      "title": "OGX Playground (Runtime)",
+      "description": "At runtime, the openai-v2 instrumentor auto-traces every LLM call through the OpenAI-compatible API. Each prompt creates a span with model name, input/output messages, and token counts.",
+      "details": [
+        ["Instrumentor", "opentelemetry-instrumentation-openai-v2"],
+        ["Span attributes", "gen_ai.operation.name, gen_ai.request.model, gen_ai.input_messages, gen_ai.output_messages, gen_ai.usage.*"]
+      ]
+    },
+    "n_guardrails": {
+      "title": "NemoGuardrails (Runtime)",
+      "description": "Evaluates self-check input and output rails using an LLM-as-judge pattern. Each rail check creates trace spans showing which rails fired.",
+      "details": [
+        ["Input rail", "self_check_input \u2014 checks user prompt against policy"],
+        ["Output rail", "self_check_output \u2014 checks model response against policy"],
+        ["Judge model", "Same model (gpt-oss-20b) called as a judge"]
+      ]
+    },
+    "n_maas": {
+      "title": "MaaS Backend",
+      "description": "The model inference endpoint serving gpt-oss-20b via vLLM. Called by both the Playground (for inference) and NemoGuardrails (as the LLM judge).",
+      "details": [
+        ["Model", "publishers/llm/models/gpt-oss-20b"],
+        ["API", "OpenAI-compatible /v1/chat/completions"]
+      ]
+    },
+    "n_mlflow": {
+      "title": "MLflow Traces",
+      "description": "Receives OTLP traces over HTTPS. Requires three headers on every request: Authorization (SA token), X-MLflow-Workspace, and X-MLflow-Experiment-Id.",
+      "details": [
+        ["Protocol", "OTLP HTTP/protobuf"],
+        ["Endpoint", "https://mlflow.redhat-ods-applications.svc:8443"],
+        ["Required headers", "Authorization, X-MLflow-Workspace, X-MLflow-Experiment-Id"],
+        ["View", "RHOAI Dashboard \u2192 MLflow \u2192 Traces tab"]
+      ]
+    },
+    "n_trace_pg": {
+      "title": "Playground Trace",
+      "description": "Each LLM call creates a trace with the full conversation: input prompt, model response, token counts, and latency.",
+      "details": [
+        ["gen_ai.operation.name", "chat"],
+        ["gen_ai.request.model", "publishers/llm/models/gpt-oss-20b"],
+        ["Content", "Visible in MLflow Chat tab (requires span_only mode)"]
+      ]
+    },
+    "n_trace_input": {
+      "title": "Input Rail Trace",
+      "description": "The self_check_input rail evaluates the user's prompt against enterprise policies. Always fires when guardrails are enabled.",
+      "details": [
+        ["gen_ai.operation.name", "self_check_input"],
+        ["Judge prompt", "Checks for jailbreaks, phishing, brand policy violations"],
+        ["If blocked", "No self_check_output or chat trace follows"]
+      ]
+    },
+    "n_trace_output": {
+      "title": "Output Rail Trace",
+      "description": "The self_check_output rail evaluates the model's response. Only fires if the input rail allowed the prompt through.",
+      "details": [
+        ["gen_ai.operation.name", "self_check_output"],
+        ["Judge prompt", "Checks for harmful content, competitor promotion, phishing templates"],
+        ["Presence", "Indicates input was allowed; absence means input was blocked"]
+      ]
+    },
+    "n_content": {
+      "title": "Content Capture",
+      "description": "Requires TWO env vars working together. Without both, the MLflow Chat tab is empty even though traces appear.",
+      "details": [
+        ["Var 1", "OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental"],
+        ["Var 2", "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=span_only"],
+        ["Why span_only", "MLflow reads content from span attributes, not OTEL events"],
+        ["Common mistake", "Using 'true' instead of 'span_only' \u2192 empty Chat view"]
+      ]
+    },
+    "n_decision": {
+      "title": "Blocked vs Allowed Detection",
+      "description": "There is no explicit rail.stop attribute in the current server-mode traces. Instead, infer the decision from the span pattern in MLflow.",
+      "details": [
+        ["Input blocked", "Only self_check_input trace from NemoGuardrails, no self_check_output"],
+        ["Output blocked", "Both self_check_input + self_check_output, but no Playground chat trace"],
+        ["Fully allowed", "self_check_input + self_check_output + Playground chat trace"],
+        ["Guardrails off", "Only Playground chat traces, no NemoGuardrails traces"]
+      ]
+    },
+    "n_cert_rhel": {
+      "title": "RHEL Certificate Path",
+      "description": "The OGX Playground uses a RHEL base image. The OpenShift service-CA is NOT in /etc/pki/tls/certs/ca-bundle.crt. Must mount config-service-cabundle ConfigMap separately.",
+      "details": [
+        ["System CA bundle", "/etc/pki/tls/certs/ca-bundle.crt (missing service-CA)"],
+        ["Mounted CA", "/etc/pki/tls/custom/service-ca.crt"],
+        ["ConfigMap", "config-service-cabundle"]
+      ]
+    },
+    "n_cert_debian": {
+      "title": "Debian Certificate Path",
+      "description": "NemoGuardrails uses a Debian base image. It already has a ca-bundle-transfer init container that combines system CAs with the OpenShift service-CA into one file. No extra volume needed.",
+      "details": [
+        ["Combined CA", "/etc/ssl/certs/ca-certificates.crt (includes service-CA)"],
+        ["Init container", "ca-bundle-transfer merges system + service CAs"],
+        ["Extra volume", "Not needed"]
+      ]
+    }
+  },
+  "flows": {
+    "setup": {
+      "label": "Full Setup (Phases 1\u20133)",
+      "steps": [
+        { "text": "1. Admin runs setup-mlflow-tracing.sh", "mode": "arrow", "from": "admin", "to": "c1_mlflow", "color": "#58a6ff", "num": 1, "glow": "c1_mlflow" },
+        { "text": "2. Verify mlflowoperator is Managed in the DSC", "mode": "lightup", "target": "n_dsc", "badge": "\u2713" },
+        { "text": "3. Wait for MLflow CRD to appear (up to 60s)", "mode": "lightup", "target": "n_mlflow_crd", "badge": 3 },
+        { "text": "4. Create MLflow CR (name must be 'mlflow' \u2014 singleton)", "mode": "lightup", "target": "n_mlflow_cr", "badge": 4 },
+        { "text": "5. Wait for MLflow pod to be ready in redhat-ods-applications", "mode": "lightup", "target": "n_mlflow_pod", "badge": 5 },
+        { "text": "6. Create experiment 'guardrails-playground' via MLflow API", "mode": "lightup", "target": "n_experiment", "badge": 6 },
+        { "text": "7. Phase 2: Configure Playground tracing", "mode": "arrow", "from": "c1_mlflow", "to": "c2_playground", "color": "#3fb950", "num": 7, "glow": "c2_playground" },
+        { "text": "8. Find OGXServer and detect the Playground SA", "mode": "lightup", "target": "n_ogxserver", "badge": 8 },
+        { "text": "9. Grant SA the edit role for MLflow kubernetes-auth", "mode": "lightup", "target": "n_pgnd_sa", "badge": 9 },
+        { "text": "10. Create auth secret with SA token + workspace headers", "mode": "lightup", "target": "n_otel_secret", "badge": 10 },
+        { "text": "11. Mount service-CA cert volume (config-service-cabundle)", "mode": "lightup", "target": "n_svc_ca", "badge": 11 },
+        { "text": "12. Wrap command: opentelemetry-instrument ogx run ...", "mode": "lightup", "target": "n_otel_wrap", "badge": 12 },
+        { "text": "13. Set 11 OTEL env vars (endpoint, headers, content capture, noise filter)", "mode": "lightup", "target": "n_otel_env", "badge": 13 },
+        { "text": "14. Disable 23 noisy instrumentors, keep openai-v2 + fastapi", "mode": "lightup", "target": "n_pgnd_disabled", "badge": 14 },
+        { "text": "15. Phase 3: Configure NemoGuardrails tracing", "mode": "arrow", "from": "c2_playground", "to": "c3_guardrails", "color": "#d2a8ff", "num": 15, "glow": "c3_guardrails" },
+        { "text": "16. Find NemoGuardrails CR and detect SA", "mode": "lightup", "target": "n_ngr_cr", "badge": 16 },
+        { "text": "17. Grant SA the edit role + MLflow ClusterRole", "mode": "lightup", "target": "n_ngr_sa", "badge": 17 },
+        { "text": "18. Create auth secret for NemoGuardrails", "mode": "lightup", "target": "n_ngr_secret", "badge": 18 },
+        { "text": "19. Ensure OPENAI_API_KEY is in a secret (migrate if plaintext)", "mode": "lightup", "target": "n_apikey", "badge": 19 },
+        { "text": "20. Patch CR spec.env with OTEL vars + API key secretKeyRef", "mode": "lightup", "target": "n_ngr_env", "badge": 20 },
+        { "text": "21. Set PYTHONPATH for auto-instrumentation (operator-proof!)", "mode": "lightup", "target": "n_ngr_cmd", "badge": "\u2713" },
+        { "text": "22. Enable tracing in guardrail ConfigMap", "mode": "lightup", "target": "n_tracing_cfg", "badge": 22 },
+        { "text": "23. Setup complete \u2014 traces flow to MLflow on next prompt", "mode": "arrow", "from": "c3_guardrails", "to": "n_mlflow", "color": "#3fb950", "num": 23 }
+      ]
+    },
+    "trace_allowed": {
+      "label": "Trace Flow: Prompt Allowed",
+      "steps": [
+        { "text": "1. User sends a safe prompt in the Playground", "mode": "arrow", "from": "user", "to": "n_playground", "color": "#3fb950", "num": 1 },
+        { "text": "2. Playground forwards prompt to NemoGuardrails for input check", "mode": "arrow", "from": "n_playground", "to": "n_guardrails", "color": "#d2a8ff", "num": 2 },
+        { "text": "3. NemoGuardrails calls the model as a judge (self_check_input)", "mode": "arrow", "from": "n_guardrails", "to": "n_maas", "color": "#d2a8ff", "num": 3 },
+        { "text": "4. Judge says: ALLOWED \u2014 input rail trace exported to MLflow", "mode": "arrow", "from": "n_guardrails", "to": "n_mlflow", "color": "#3fb950", "num": 4 },
+        { "text": "5. Input rail trace: self_check_input", "mode": "lightup", "target": "n_trace_input", "badge": "\u2713" },
+        { "text": "6. Playground calls the model for actual inference", "mode": "arrow", "from": "n_playground", "to": "n_maas", "color": "#79c0ff", "num": 6 },
+        { "text": "7. Model response received", "mode": "arrow", "from": "n_maas", "to": "n_playground", "color": "#79c0ff", "num": 7 },
+        { "text": "8. Playground trace exported with full input/output content", "mode": "arrow", "from": "n_playground", "to": "n_mlflow", "color": "#3fb950", "num": 8 },
+        { "text": "9. Playground trace: gen_ai.operation.name = chat", "mode": "lightup", "target": "n_trace_pg", "badge": "\u2713" },
+        { "text": "10. NemoGuardrails checks output (self_check_output)", "mode": "arrow", "from": "n_guardrails", "to": "n_maas", "color": "#d2a8ff", "num": 10 },
+        { "text": "11. Output rail trace: self_check_output", "mode": "lightup", "target": "n_trace_output", "badge": "\u2713" },
+        { "text": "12. Content visible in MLflow Chat tab", "mode": "lightup", "target": "n_content", "badge": "\u2713" },
+        { "text": "13. Both rails passed \u2192 all three traces present = ALLOWED", "mode": "lightup", "target": "n_decision", "badge": "\u2713" }
+      ]
+    },
+    "trace_blocked": {
+      "label": "Trace Flow: Prompt Blocked",
+      "steps": [
+        { "text": "1. User sends a policy-violating prompt in the Playground", "mode": "arrow", "from": "user", "to": "n_playground", "color": "#f85149", "num": 1 },
+        { "text": "2. Playground forwards prompt to NemoGuardrails", "mode": "arrow", "from": "n_playground", "to": "n_guardrails", "color": "#d2a8ff", "num": 2 },
+        { "text": "3. NemoGuardrails calls the model as a judge (self_check_input)", "mode": "arrow", "from": "n_guardrails", "to": "n_maas", "color": "#d2a8ff", "num": 3 },
+        { "text": "4. Judge says: BLOCKED \u2014 input rail trace exported to MLflow", "mode": "arrow", "from": "n_guardrails", "to": "n_mlflow", "color": "#f85149", "num": 4 },
+        { "text": "5. Input rail trace: self_check_input (only this trace!)", "mode": "lightup", "target": "n_trace_input", "badge": "\u2717" },
+        { "text": "6. No self_check_output trace \u2014 input was blocked", "mode": "lightup", "target": "n_trace_output", "badge": "\u2014", "errColor": "#f85149" },
+        { "text": "7. No Playground inference trace \u2014 model never called", "mode": "lightup", "target": "n_trace_pg", "badge": "\u2014", "errColor": "#f85149" },
+        { "text": "8. Only self_check_input present = BLOCKED at input", "mode": "lightup", "target": "n_decision", "badge": "\u2717", "errColor": "#f85149" }
+      ]
+    },
+    "pitfalls": {
+      "label": "Common Pitfalls",
+      "steps": [
+        { "text": "1. Pitfall: OTEL env vars set but no opentelemetry-instrument wrapper", "mode": "lightup", "target": "n_otel_wrap", "badge": "\u2717", "errColor": "#f85149" },
+        { "text": "2. Result: ProxyTracerProvider (no-op) \u2014 zero traces generated", "mode": "lightup", "target": "n_otel_env", "badge": "\u2717", "errColor": "#f85149" },
+        { "text": "3. Fix: wrap command with opentelemetry-instrument", "mode": "lightup", "target": "n_otel_wrap", "badge": "\u2713" },
+        { "text": "4. Pitfall: using RHEL cert path on Debian NemoGuardrails pod", "mode": "lightup", "target": "n_cert_rhel", "badge": "\u2717", "errColor": "#f85149" },
+        { "text": "5. Result: SSL CERTIFICATE_VERIFY_FAILED \u2014 wrong CA bundle path", "mode": "lightup", "target": "n_ngr_env", "badge": "\u2717", "errColor": "#f85149" },
+        { "text": "6. OGX (RHEL): /etc/pki/tls/custom/service-ca.crt (mounted volume)", "mode": "lightup", "target": "n_cert_rhel", "badge": "\u2713" },
+        { "text": "7. NemoGuardrails (Debian): /etc/ssl/certs/ca-certificates.crt (built-in)", "mode": "lightup", "target": "n_cert_debian", "badge": "\u2713" },
+        { "text": "8. Pitfall: missing X-MLflow-Workspace header", "mode": "lightup", "target": "n_mlflow", "badge": "400", "errColor": "#f85149" },
+        { "text": "9. Result: 400 Bad Request \u2014 'Workspace context is required'", "mode": "lightup", "target": "n_otel_secret", "badge": "\u2717", "errColor": "#f85149" },
+        { "text": "10. Fix: add X-MLflow-Workspace + X-MLflow-Experiment-Id to OTEL headers secret", "mode": "lightup", "target": "n_otel_secret", "badge": "\u2713" },
+        { "text": "11. Solved: operator used to revert command patches", "mode": "lightup", "target": "n_ngr_cmd", "badge": "\u2713" },
+        { "text": "12. Fix: PYTHONPATH in CR spec.env initializes SDK without command override", "mode": "lightup", "target": "n_ngr_cmd", "badge": "\u2713" },
+        { "text": "13. Pitfall: 25 noisy instrumentors filling MLflow with HTTP/DB spans", "mode": "lightup", "target": "n_pgnd_disabled", "badge": "\u2717", "errColor": "#f85149" },
+        { "text": "14. Fix: OTEL_PYTHON_DISABLED_INSTRUMENTATIONS disables 23, keeps 2", "mode": "lightup", "target": "n_pgnd_disabled", "badge": "\u2713" },
+        { "text": "15. Pitfall: empty Chat view in MLflow (traces appear but no content)", "mode": "lightup", "target": "n_content", "badge": "\u2717", "errColor": "#f85149" },
+        { "text": "16. Fix: OTEL_SEMCONV_STABILITY_OPT_IN + span_only (not 'true'!)", "mode": "lightup", "target": "n_content", "badge": "\u2713" }
+      ]
+    }
+  },
+  "flowOrder": ["setup", "trace_allowed", "trace_blocked", "pitfalls"],
+  "defaultFlow": "setup",
+  "legend": [
+    { "color": "#58a6ff", "label": "Phase 1: MLflow Setup" },
+    { "color": "#3fb950", "label": "Phase 2: Playground Tracing" },
+    { "color": "#d2a8ff", "label": "Phase 3: NemoGuardrails Tracing" },
+    { "color": "#79c0ff", "label": "Model Inference" },
+    { "color": "#ffa657", "label": "Runtime / Traces" },
+    { "color": "#8b949e", "label": "Certificate Paths" },
+    { "color": "#f85149", "label": "Blocked / Error" }
+  ]
+};
+
+await viz.load(diagram);
+
+const cvs = document.getElementById('fs-canvas');
+cvs.addEventListener('mousemove', e => {
+  const rect = cvs.getBoundingClientRect();
+  const eng = viz._engine;
+  const mx = (e.clientX - rect.left - eng._ox) / eng._sc;
+  const my = (e.clientY - rect.top - eng._oy) / eng._sc;
+  let hit = false;
+  for (const [k, n] of Object.entries(eng.state.nodes)) {
+    if (n.type === 'boundary' || n.type === 'container') continue;
+    if (eng.state.tooltips[k] && mx >= n.x && mx <= n.x + n.w && my >= n.y && my <= n.y + n.h) {
+      hit = true;
+      break;
+    }
+  }
+  cvs.style.cursor = hit ? 'pointer' : 'default';
+});
+
+viz.state.loopMode = true;
+viz.play();
+</script>
+</body>
+</html>
