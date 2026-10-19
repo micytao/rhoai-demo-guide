@@ -109,12 +109,14 @@ if ! oc whoami &>/dev/null; then
   exit 1
 fi
 
-# Auto-detect MaaS Gateway from OpenShift routes if not provided
+# Auto-detect MaaS Gateway if not provided
 if [[ -z "$MAAS_GATEWAY" ]] && ! $SKIP_GUARDRAILS; then
+  # Try 1: OpenShift Route named 'maas'
   MAAS_GATEWAY=$(oc get route maas -n redhat-ods-applications \
     -o jsonpath='https://{.spec.host}' 2>/dev/null || true)
+
+  # Try 2: Any OpenShift Route with 'maas' in the hostname
   if [[ -z "$MAAS_GATEWAY" ]]; then
-    # Try alternate namespaces / route names
     MAAS_GATEWAY=$(oc get routes --all-namespaces -o json 2>/dev/null \
       | python3 -c "
 import sys, json
@@ -128,6 +130,37 @@ for r in routes:
         break
 " 2>/dev/null || true)
   fi
+
+  # Try 3: Gateway API HTTPRoute with 'maas' in the hostname
+  if [[ -z "$MAAS_GATEWAY" ]]; then
+    MAAS_GATEWAY=$(oc get httproutes --all-namespaces -o json 2>/dev/null \
+      | python3 -c "
+import sys, json
+items = json.load(sys.stdin).get('items', [])
+for hr in items:
+    for host in hr.get('spec', {}).get('hostnames', []):
+        if 'maas' in host.lower():
+            print(f'https://{host}')
+            break
+    else:
+        continue
+    break
+" 2>/dev/null || true)
+  fi
+
+  # Try 4: Construct from cluster domain (maas.apps.<cluster-domain>)
+  if [[ -z "$MAAS_GATEWAY" ]]; then
+    local_cluster_domain=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}' 2>/dev/null || true)
+    if [[ -n "$local_cluster_domain" ]]; then
+      local_candidate="https://maas.${local_cluster_domain}"
+      # Verify it's reachable
+      if curl -sk --connect-timeout 3 "${local_candidate}/maas-api/v1/subscriptions" \
+        -H "Authorization: Bearer $(oc whoami -t 2>/dev/null)" &>/dev/null; then
+        MAAS_GATEWAY="$local_candidate"
+      fi
+    fi
+  fi
+
   if [[ -n "$MAAS_GATEWAY" ]]; then
     info "Auto-detected MaaS Gateway: ${MAAS_GATEWAY}"
   fi
@@ -540,7 +573,7 @@ phase3_guardrails() {
     -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}{"\n"}{end}' 2>/dev/null \
     | grep '^OTEL_SERVICE_NAME$' || true)
   if [[ -n "$otel_svc" ]]; then
-    ok "OTEL env vars already present on ${deploy_name} — skipping Phase 3 env setup"
+    ok "OTEL env vars already present on ${deploy_name} — skipping Steps 3.1–3.2, 3.4"
   else
     # Step 3.1 — Grant SA edit role
     info "Step 3.1 — Granting '${sa_name}' edit role..."
@@ -585,8 +618,12 @@ phase3_guardrails() {
         ok "Secret '${secret_name}' created"
       fi
     fi
+  fi  # end OTEL env check (Steps 3.1-3.2)
 
-    # Step 3.3 — Ensure OPENAI_API_KEY secret exists with a valid MaaS key
+  # Steps 3.3+ run regardless of OTEL env state — they handle the model
+  # backend and API key, which are independent of the OTEL pipeline.
+
+  # Step 3.3 — Ensure OPENAI_API_KEY secret exists with a valid MaaS key
     local api_key_secret="nemoguardrails-api-key"
     info "Step 3.3 — Checking OPENAI_API_KEY secret..."
     if oc get secret "${api_key_secret}" -n "${NS}" &>/dev/null; then
@@ -676,6 +713,8 @@ if best:
     fi
 
     # Step 3.4 — Patch NemoGuardrails CR env vars (including PYTHONPATH for SDK init)
+    # Only run if OTEL env vars aren't already set
+    if [[ -z "$otel_svc" ]]; then
     info "Step 3.4 — Patching NemoGuardrails CR env vars..."
     #
     # KEY INSIGHT: Instead of wrapping the command with opentelemetry-instrument
@@ -701,7 +740,7 @@ if best:
   ]}
 ]'"
     ok "NemoGuardrails CR env patched (with PYTHONPATH for auto-instrumentation)"
-  fi
+    fi  # end Step 3.4 OTEL gate
 
   # Step 3.5 — (No longer needed: PYTHONPATH replaces the command wrapper)
   # The PYTHONPATH env var in step 3.4 initializes the OTEL SDK at Python
