@@ -167,9 +167,14 @@ User prompt → OGX Playground ──→ MaaS Model (gpt-oss-20b)
 
 - **RHOAI 3.5+** with GenAI Studio / MaaS deployed
 - **`oc` CLI** logged in with cluster-admin or project-admin privileges
-- A **namespace** (e.g. `demo`) with:
-  - An OGXServer (Playground) already running
-  - Optionally, NemoGuardrails deployed
+- A **project created from the RHOAI Dashboard** (not from OpenShift):
+  > ⚠️ Projects created via `oc new-project` or the OpenShift console lack the
+  > RHOAI labels (`opendatahub.io/dashboard: 'true'`) and **will not appear** in
+  > the RHOAI Dashboard. Create the project from: Data Science Projects → Create.
+- An **OGX Playground already created** in the project:
+  > The setup script detects an existing Playground but does not create one.
+  > Create it first: RHOAI Dashboard → Applications → OGX Playground → Create.
+- Optionally, **NemoGuardrails deployed** (for guardrail tracing and the demo)
 - The **MLflow operator** enabled (`mlflowoperator: Managed` in the DataScienceCluster)
 
 ---

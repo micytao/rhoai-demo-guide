@@ -15,6 +15,16 @@
 #   --dry-run            Show what would be done without making changes
 #   -h, --help           Show this help
 #
+# Prerequisites:
+#   - The project/namespace must be created from the RHOAI Dashboard
+#     (not from OpenShift). Projects created via 'oc new-project' or the
+#     OpenShift console lack the RHOAI labels and won't appear in the
+#     Dashboard for creating Playgrounds or NemoGuardrails.
+#   - An OGX Playground must already exist in the namespace. The script
+#     detects it but does not create it. Create one from the RHOAI Dashboard:
+#     Applications → OGX Playground → Create.
+#   - Optionally, NemoGuardrails should already be deployed for Phase 3.
+#
 # See docs/mlflow-tracing-guide.md for a detailed walkthrough.
 
 set -euo pipefail

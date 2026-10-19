@@ -11,6 +11,24 @@
 
 ---
 
+## Pre-Demo Setup
+
+Before running this demo, ensure:
+
+1. **Create the project from the RHOAI Dashboard** (Data Science Projects → Create),
+   **not** from the OpenShift console or `oc new-project`. Projects created directly
+   in OpenShift lack the RHOAI labels and won't appear in the Dashboard for creating
+   Playgrounds or deploying NemoGuardrails.
+
+2. **Create an OGX Playground** in the project from the RHOAI Dashboard:
+   Applications → OGX Playground → Create. The tracing script and this demo
+   expect an existing Playground — they do not create one.
+
+3. **Deploy NemoGuardrails** in the project (needed for ACTs 2–5). This can be done
+   from the RHOAI Dashboard under Applications → NemoGuardrails.
+
+---
+
 ## Overview
 
 This demo shows how RHOAI platform-level guardrails add enterprise policy enforcement

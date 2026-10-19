@@ -96,9 +96,17 @@ Click any node for a detailed tooltip with `oc` commands and config values.
 
 - **RHOAI 3.5+** with GenAI Studio or MaaS deployed
 - **`oc` CLI** logged in with cluster-admin or project-admin privileges
-- A **project/namespace** (e.g. `demo`) with:
-  - An OGXServer (Playground) already created and working
-  - Optionally, NemoGuardrails deployed (for guardrail tracing)
+- A **project/namespace** (e.g. `demo`) created **from the RHOAI Dashboard**:
+  > **Important:** Create the project from the RHOAI Dashboard (Data Science
+  > Projects → Create), **not** from the OpenShift console or `oc new-project`.
+  > Projects created directly in OpenShift lack the RHOAI labels
+  > (`opendatahub.io/dashboard: 'true'`) and will not appear in the RHOAI
+  > Dashboard — you won't be able to create Playgrounds, deploy NemoGuardrails,
+  > or use other GenAI Studio features in that project.
+- An **OGX Playground already created** in the project:
+  > The script detects an existing OGXServer but does **not** create one.
+  > Create it first from the RHOAI Dashboard: Applications → OGX Playground → Create.
+- Optionally, **NemoGuardrails deployed** in the project (for guardrail tracing)
 - The **MLflow operator** enabled in the DataScienceCluster (`mlflowoperator: Managed`)
 
 ## Quick Start
