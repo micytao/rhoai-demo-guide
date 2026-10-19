@@ -27,6 +27,16 @@ Before running this demo, ensure:
 3. **Deploy NemoGuardrails** in the project (needed for ACTs 2–5). This can be done
    from the RHOAI Dashboard under Applications → NemoGuardrails.
 
+4. **Run the setup script** to wire tracing and configure the guardrails model backend:
+   ```bash
+   ./scripts/setup-mlflow-tracing.sh --namespace <your-project>
+   ```
+   This auto-detects the MaaS gateway, creates a real API key for the LLM judge,
+   replaces the `placeholder.invalid` model backend, enables tracing, and wires
+   both Playground and NemoGuardrails to export traces to MLflow.
+   After this, ACT 2 Steps 2–4 are already done — you only need Step 1 (policy
+   rules) and Step 6 (enable guardrails in the Playground).
+
 ---
 
 ## Overview
@@ -116,6 +126,13 @@ policy. Only platform guardrails can enforce this kind of business rule.
 ---
 
 ## ACT 2: Enable Platform Guardrails
+
+> **Note:** If you ran `setup-mlflow-tracing.sh` with Phase 3 enabled, **Steps 2–4
+> below are already done** — the script auto-detects the MaaS gateway, updates the
+> guardrail model backend from `placeholder.invalid` to the real endpoint, and creates
+> a valid MaaS API key. You still need to do **Step 1** (update policy rules) and
+> **Step 6** (enable guardrails in the Playground) manually, as these are
+> demo-specific customisations.
 
 ### Step 1 — Update guardrail policies with enterprise rules
 

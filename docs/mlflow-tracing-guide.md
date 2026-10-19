@@ -65,9 +65,11 @@ flowchart TD
         P -->|No| Q[Grant SA RBAC]
         P -->|Yes| S[Skip]
         Q --> R[Create auth secret]
-        R --> T[Patch CR env + deployment command]
+        R --> R2[Create MaaS API key]
+        R2 --> T[Patch CR env + PYTHONPATH]
+        T --> T2[Update model backend + tracing config]
         S --> U[Verify trace export]
-        T --> U
+        T2 --> U
     end
     phase1 --> phase2
     phase2 --> phase3
@@ -113,7 +115,13 @@ Click any node for a detailed tooltip with `oc` commands and config values.
 
 ```bash
 # Default: configure everything in the 'demo' namespace
+# Auto-detects MaaS gateway and model from OpenShift routes
 ./scripts/setup-mlflow-tracing.sh --namespace demo
+
+# Explicit MaaS gateway and model (if auto-detect doesn't work)
+./scripts/setup-mlflow-tracing.sh --namespace demo \
+  --maas-gateway https://maas.apps.<cluster-domain> \
+  --model publishers/llm/models/gpt-oss-20b
 
 # Only set up MLflow (skip Playground and guardrails patching)
 ./scripts/setup-mlflow-tracing.sh --namespace demo --skip-playground --skip-guardrails
@@ -121,6 +129,18 @@ Click any node for a detailed tooltip with `oc` commands and config values.
 # Preview what would be done without making changes
 ./scripts/setup-mlflow-tracing.sh --namespace demo --dry-run
 ```
+
+### Script Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `--namespace <ns>` | `demo` | Target namespace |
+| `--maas-gateway <url>` | *(auto-detected from routes)* | MaaS gateway URL for guardrails model backend |
+| `--model <name>` | *(auto-detected from MaaS subscriptions)* | Model name for the LLM judge |
+| `--skip-mlflow` | | Skip Phase 1 (MLflow setup) |
+| `--skip-playground` | | Skip Phase 2 (Playground tracing) |
+| `--skip-guardrails` | | Skip Phase 3 (NemoGuardrails tracing) |
+| `--dry-run` | | Show what would be done without making changes |
 
 ## What the Script Does
 
@@ -154,6 +174,15 @@ seconds to appear. The script polls for up to 60 seconds.
 
 The MLflow CR has a **mandatory singleton name**: it must be called `mlflow`.
 Any other name is rejected with a validation error.
+
+If the CR already exists but the `workspaceLabelSelector` points to a different
+namespace (e.g. from a prior run with `--namespace demo` and you now use `--namespace test`),
+the script **auto-patches** the selector to match the current namespace. Without this,
+MLflow rejects the new workspace with:
+
+```
+Workspace 'test' not found ... Ensure the namespace exists and matches the configured selector
+```
 
 ```yaml
 apiVersion: mlflow.opendatahub.io/v1
@@ -353,7 +382,38 @@ oc create secret generic nemoguardrails-otel-auth -n demo \
     nemoguardrails-serviceaccount -n demo --duration=8760h),X-MLflow-Workspace=demo,X-MLflow-Experiment-Id=1"
 ```
 
-#### Step 3.3 — Patch the NemoGuardrails CR env vars
+#### Step 3.3 — Create a MaaS API key for the LLM judge
+
+NemoGuardrails calls the model as a judge for `self_check_input` and `self_check_output`
+rails. **Without a valid API key and model backend, the guardrails silently error out
+and generate no traces** — the OTEL pipeline is fully wired but there's nothing to trace.
+
+The script auto-detects the MaaS gateway from OpenShift routes and creates a real API key:
+
+1. Discovers MaaS subscriptions via `GET /maas-api/v1/subscriptions`
+2. Selects the highest-priority subscription
+3. Creates a 7-day API key via `POST /maas-api/v1/api-keys`
+4. Stores it in a Kubernetes secret (`nemoguardrails-api-key`)
+
+**Stub detection:** If the secret already exists but the key is suspiciously small
+(< 15 bytes), the script replaces it. This catches placeholder values that were
+migrated from the CR but never replaced with real keys.
+
+**Fallback:** If the MaaS gateway isn't reachable or auto-detect fails, the script
+falls back to migrating any existing plaintext `OPENAI_API_KEY` from the CR or
+deployment into a secret, and prints manual instructions if nothing is found.
+
+```bash
+# Manual override if needed
+oc delete secret nemoguardrails-api-key -n demo --ignore-not-found
+oc create secret generic nemoguardrails-api-key -n demo \
+  --from-literal=key=<YOUR_MAAS_API_KEY>
+```
+
+**Note on expiration:** The API key expires after 7 days. Re-run the script
+(delete the secret first to force recreation) or create a longer-lived key manually.
+
+#### Step 3.4 — Patch the NemoGuardrails CR env vars
 
 The NemoGuardrails CRD supports `valueFrom.secretKeyRef` in its `spec.env` array.
 The script patches the CR (not the deployment) so changes persist across operator
@@ -377,15 +437,16 @@ oc patch nemoguardrails nemoguardrails -n demo --type json -p '[
 ```
 
 **Note on OPENAI_API_KEY:** The NemoGuardrails pod needs a MaaS API key to call the
-model as a judge. The script preserves the existing key by storing it in a secret
-(`nemoguardrails-api-key`) and referencing it via `secretKeyRef`.
+model as a judge. The script creates a real key via the MaaS API (Step 3.3) and stores
+it in a secret (`nemoguardrails-api-key`), referenced via `secretKeyRef`. If the MaaS
+gateway is unavailable, it falls back to migrating an existing plaintext key.
 
 **Note on cert path:** The NemoGuardrails pod uses a Debian-based image where the CA
 bundle is at `/etc/ssl/certs/ca-certificates.crt`. A `ca-bundle-transfer` init
 container already combines the system CAs with the OpenShift service-CA, so no extra
 volume mount is needed (unlike the OGX pod).
 
-#### Step 3.4 — Wrap the startup with `opentelemetry-instrument`
+#### Step 3.5 — Activate the OTEL SDK via PYTHONPATH
 
 ~~The NemoGuardrails CRD does **not** support command overrides.~~ **Updated approach:**
 instead of patching the deployment command directly (which the TrustyAI operator
@@ -405,9 +466,23 @@ startup — before any application code runs. The OpenTelemetry `sitecustomize.p
 This is set via the NemoGuardrails CR's `spec.env`, so the operator **preserves it**
 across reconciliations. No more command patches, no more operator reverts.
 
-#### Step 3.5 — Enable tracing in the guardrail config
+#### Step 3.6 — Update the guardrail model backend and enable tracing
 
-The `guardrail-placeholder` ConfigMap's `config.yaml` needs a `tracing` section:
+The `guardrail-placeholder` ConfigMap's `config.yaml` ships with a dead placeholder
+backend (`http://placeholder.invalid/v1`). Without updating this to the real MaaS
+endpoint, the LLM judge calls fail silently and **no guardrail traces are generated**
+— the OTEL pipeline is fully wired but there's nothing to trace.
+
+The script auto-detects the MaaS gateway and model, then patches the ConfigMap:
+
+- Replaces `model: placeholder` → `model: <auto-detected model name>`
+- Replaces `base_url: "http://placeholder.invalid/v1"` → `base_url: "<maas-gateway>/v1"`
+- Adds the `tracing:` section if missing
+
+The script uses regex substitution, so it only replaces `placeholder.invalid` — if
+someone has already configured a real model backend, it is preserved.
+
+The `tracing` section tells NemoGuardrails to generate trace spans for rail evaluations:
 
 ```yaml
 tracing:
@@ -416,9 +491,6 @@ tracing:
   adapters:
     - name: OpenTelemetry
 ```
-
-This tells NemoGuardrails to generate trace spans for rail evaluations and pipe them
-through the OpenTelemetry adapter (which uses the SDK configured by the env vars above).
 
 ---
 
@@ -539,6 +611,42 @@ Without these headers, MLflow returns `400 Bad Request: Workspace context is req
 
 ## Troubleshooting
 
+### NemoGuardrails traces missing (Playground traces work fine)
+
+**Symptom:** Playground traces appear in MLflow, but no NemoGuardrails traces at all.
+
+**Cause:** The guardrail model backend is still `placeholder.invalid` or the MaaS
+API key is invalid/expired. When the LLM judge call fails, NemoGuardrails returns
+`status: error` silently and generates no trace spans — even though the OTEL pipeline
+is fully configured.
+
+```bash
+# Check if the model backend is still a placeholder
+oc get configmap guardrail-placeholder -n demo -o jsonpath='{.data.config\.yaml}' | grep base_url
+
+# Test guardrails directly — look for "placeholder.invalid" or "401" errors
+oc exec deployment/nemoguardrails -n demo -c nemo-guardrails -- python3 -c "
+import httpx, json
+r = httpx.post('http://localhost:8000/v1/guardrail/checks', json={
+    'model': 'publishers/llm/models/gpt-oss-20b',
+    'messages': [{'role': 'user', 'content': 'test'}],
+    'guardrails': {}
+}, timeout=60)
+print(json.dumps(r.json(), indent=2))
+"
+
+# Check API key secret size (stub keys are < 20 base64 chars)
+oc get secret nemoguardrails-api-key -n demo -o jsonpath='{.data.key}' | wc -c
+```
+
+**Fix:** Re-run the script — it auto-detects MaaS and replaces the placeholder:
+
+```bash
+./scripts/setup-mlflow-tracing.sh --namespace demo --skip-mlflow --skip-playground
+```
+
+Or manually: update the ConfigMap model backend and recreate the API key secret.
+
 ### 401 Unauthorized on trace export
 
 **Symptom:** MLflow logs show `POST /v1/traces HTTP/1.1" 401 Unauthorized`
@@ -565,6 +673,20 @@ oc logs -n redhat-ods-applications deployment/mlflow -c mlflow --tail=20 | grep 
 ```bash
 # Verify cert is mounted and non-empty
 oc exec deployment/lsd-genai-playground -n demo -- wc -l /etc/pki/tls/custom/service-ca.crt
+```
+
+### MLflow workspace mismatch (400 on experiment creation)
+
+**Symptom:** Step 1.5 warns: `Workspace '<ns>' not found ... matches the configured selector`
+
+**Cause:** The MLflow CR was created with a `workspaceLabelSelector` pointing to a
+different namespace (e.g. `demo`) and you're now using `--namespace test`.
+
+**Fix:** The script now auto-detects this and patches the selector. If it didn't
+work, patch manually:
+
+```bash
+oc patch mlflow mlflow --type merge -p '{"spec":{"workspaceLabelSelector":{"matchLabels":{"kubernetes.io/metadata.name":"<your-namespace>"}}}}'
 ```
 
 ### 400 Bad Request on trace export

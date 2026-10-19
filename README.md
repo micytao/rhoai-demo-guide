@@ -133,8 +133,13 @@ User prompt → OGX Playground ──→ MaaS Model (gpt-oss-20b)
 ### Quick Start
 
 ```bash
-# Configure everything in the 'demo' namespace
+# Configure everything in the 'demo' namespace (auto-detects MaaS gateway and model)
 ./scripts/setup-mlflow-tracing.sh --namespace demo
+
+# Explicit MaaS gateway and model (if auto-detect doesn't work)
+./scripts/setup-mlflow-tracing.sh --namespace demo \
+  --maas-gateway https://maas.apps.<cluster>/v1 \
+  --model publishers/llm/models/gpt-oss-20b
 
 # Preview without making changes
 ./scripts/setup-mlflow-tracing.sh --namespace demo --dry-run
@@ -147,9 +152,9 @@ User prompt → OGX Playground ──→ MaaS Model (gpt-oss-20b)
 
 | Phase | Steps | Key Actions |
 |---|---|---|
-| **1. MLflow Setup** | Verify operator → Create CR → Create experiment | Ensures MLflow is running with a `guardrails-playground` experiment |
+| **1. MLflow Setup** | Verify operator → Create CR → Create experiment | Ensures MLflow is running with a `guardrails-playground` experiment. Auto-patches workspace selector if namespace changed. |
 | **2. Playground Tracing** | RBAC → Auth secret → CA cert → Command wrap → Env vars | Activates `opentelemetry-instrument` on OGX with 11 OTEL env vars |
-| **3. NemoGuardrails Tracing** | RBAC → Auth secret → CR env patch → Config update | Uses `PYTHONPATH` trick for operator-proof OTEL SDK initialization |
+| **3. NemoGuardrails Tracing** | RBAC → Auth secret → **MaaS API key** → CR env patch → **Model backend + tracing config** | Auto-detects MaaS gateway, creates a real API key, replaces `placeholder.invalid` with the real model endpoint, and uses `PYTHONPATH` for operator-proof OTEL SDK init |
 
 ### Key Design Decisions
 
@@ -160,6 +165,8 @@ User prompt → OGX Playground ──→ MaaS Model (gpt-oss-20b)
 | 23 instrumentors disabled (OGX) | Keeps only `openai-v2` + `fastapi`, suppresses noisy HTTP/DB/template spans |
 | `span_only` content capture | MLflow reads span attributes, not OTEL events — `event_only` leaves Chat view empty |
 | Separate cert paths | OGX (RHEL): `/etc/pki/tls/custom/service-ca.crt` · NemoGuardrails (Debian): `/etc/ssl/certs/ca-certificates.crt` |
+| Auto-detect MaaS gateway | Scans OpenShift routes for `maas` hostname; override with `--maas-gateway` |
+| Auto-create MaaS API key | Creates a 7-day key via MaaS API; detects and replaces stub keys |
 
 ---
 
@@ -186,6 +193,7 @@ See the full [troubleshooting section](docs/mlflow-tracing-guide.md#troubleshoot
 | Symptom | Likely Cause | Fix |
 |---|---|---|
 | No traces at all | OTEL SDK not initialized | Verify `opentelemetry-instrument` wrapper (OGX) or `PYTHONPATH` (NGR) |
+| NemoGuardrails traces missing (but Playground works) | Guardrail model backend is `placeholder.invalid` or API key is invalid | Re-run the script — it auto-detects MaaS and creates a real API key. Or use `--maas-gateway` and `--model` |
 | `401 Unauthorized` | SA token expired or missing role | Recreate auth secret, verify `edit` role |
 | `SSL CERTIFICATE_VERIFY_FAILED` | Wrong CA cert path | RHEL: mount `config-service-cabundle`; Debian: already has `ca-bundle-transfer` |
 | `400 Bad Request` | Missing workspace headers | Ensure `X-MLflow-Workspace` + `X-MLflow-Experiment-Id` in OTEL headers secret |
