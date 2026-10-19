@@ -51,10 +51,9 @@ The animated diagram walks through the full setup and runtime trace flows
 interactively — click any node for detailed tooltips with `oc` commands and
 config values.
 
-### ▶️ [Launch the Interactive Diagram](https://htmlpreview.github.io/?https://github.com/micytao/rhoai-demo-guide/blob/main/docs/mlflow-tracing-flow.html)
+### ▶️ [Launch the Interactive Diagram](https://micytao.github.io/rhoai-demo-guide/mlflow-tracing-flow.html)
 
-> GitHub doesn't render HTML files directly. Click the link above to view the
-> live animation via [htmlpreview.github.io](https://htmlpreview.github.io).
+> Hosted on GitHub Pages — opens the full animated diagram directly in your browser.
 
 **4 animated flows included:**
 
