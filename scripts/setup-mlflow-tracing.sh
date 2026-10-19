@@ -154,7 +154,26 @@ phase1_mlflow() {
   # Step 1.3 — Create the MLflow CR (singleton name: mlflow)
   info "Step 1.3 — Checking MLflow CR..."
   if oc get mlflow mlflow &>/dev/null 2>&1; then
-    ok "MLflow CR already exists — skipping creation"
+    # CR exists — verify the workspace selector includes our namespace
+    local current_selector
+    current_selector=$(oc get mlflow mlflow \
+      -o jsonpath='{.spec.workspaceLabelSelector.matchLabels.kubernetes\.io/metadata\.name}' 2>/dev/null || echo "")
+    if [[ "$current_selector" != "${NS}" ]]; then
+      warn "MLflow CR exists but workspace selector points to '${current_selector}', not '${NS}'"
+      info "Patching MLflow CR workspace selector to include '${NS}'..."
+      run "oc patch mlflow mlflow --type merge -p '{
+  \"spec\": {
+    \"workspaceLabelSelector\": {
+      \"matchLabels\": {
+        \"kubernetes.io/metadata.name\": \"${NS}\"
+      }
+    }
+  }
+}'"
+      ok "MLflow workspace selector updated to '${NS}'"
+    else
+      ok "MLflow CR already exists with correct workspace selector — skipping"
+    fi
   else
     info "Creating MLflow CR..."
     run "cat <<'MLFLOW_CR' | oc apply -f -
@@ -406,9 +425,11 @@ combined = existing + otel_vars
 print(json.dumps(combined))
 ")
 
-    # Apply via strategic merge patch on the deployment
-    oc patch deployment "${deploy_name}" -n "${NS}" --type strategic \
-      -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"lsd-genai-playground\",\"env\":${full_env}}]}}}}"
+    # Apply via JSON patch that replaces the env array on the first container.
+    # Strategic merge patch requires the 'image' field and exact container name;
+    # a JSON replace on the indexed path avoids both issues.
+    oc patch deployment "${deploy_name}" -n "${NS}" --type json \
+      -p "[{\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env\", \"value\": ${full_env}}]"
     ok "OTEL env vars applied to Playground deployment"
   fi
 
