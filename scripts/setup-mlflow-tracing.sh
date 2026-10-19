@@ -9,6 +9,8 @@
 #   ./scripts/setup-mlflow-tracing.sh [OPTIONS]
 #
 #   --namespace <ns>     Target namespace (default: demo)
+#   --maas-gateway <url> MaaS gateway URL (auto-detected from routes if omitted)
+#   --model <name>       Model name for guardrails LLM judge (default: auto-detect)
 #   --skip-mlflow        Skip Phase 1 (MLflow setup)
 #   --skip-playground    Skip Phase 2 (Playground tracing)
 #   --skip-guardrails    Skip Phase 3 (NemoGuardrails tracing)
@@ -37,6 +39,8 @@ SKIP_MLFLOW=false
 SKIP_PLAYGROUND=false
 SKIP_GUARDRAILS=false
 DRY_RUN=false
+MAAS_GATEWAY=""
+MODEL_NAME=""
 
 MLFLOW_NS="redhat-ods-applications"
 MLFLOW_ENDPOINT="https://mlflow.${MLFLOW_NS}.svc:8443"
@@ -84,6 +88,8 @@ usage() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --namespace)     NS="$2"; shift 2 ;;
+    --maas-gateway)  MAAS_GATEWAY="$2"; shift 2 ;;
+    --model)         MODEL_NAME="$2"; shift 2 ;;
     --skip-mlflow)   SKIP_MLFLOW=true; shift ;;
     --skip-playground) SKIP_PLAYGROUND=true; shift ;;
     --skip-guardrails) SKIP_GUARDRAILS=true; shift ;;
@@ -103,9 +109,60 @@ if ! oc whoami &>/dev/null; then
   exit 1
 fi
 
+# Auto-detect MaaS Gateway from OpenShift routes if not provided
+if [[ -z "$MAAS_GATEWAY" ]] && ! $SKIP_GUARDRAILS; then
+  MAAS_GATEWAY=$(oc get route maas -n redhat-ods-applications \
+    -o jsonpath='https://{.spec.host}' 2>/dev/null || true)
+  if [[ -z "$MAAS_GATEWAY" ]]; then
+    # Try alternate namespaces / route names
+    MAAS_GATEWAY=$(oc get routes --all-namespaces -o json 2>/dev/null \
+      | python3 -c "
+import sys, json
+routes = json.load(sys.stdin).get('items', [])
+for r in routes:
+    host = r.get('spec', {}).get('host', '')
+    if 'maas' in host.lower():
+        tls = r.get('spec', {}).get('tls')
+        scheme = 'https' if tls else 'http'
+        print(f'{scheme}://{host}')
+        break
+" 2>/dev/null || true)
+  fi
+  if [[ -n "$MAAS_GATEWAY" ]]; then
+    info "Auto-detected MaaS Gateway: ${MAAS_GATEWAY}"
+  fi
+fi
+
+# Auto-detect model from MaaS subscriptions if not provided
+if [[ -z "$MODEL_NAME" ]] && [[ -n "$MAAS_GATEWAY" ]] && ! $SKIP_GUARDRAILS; then
+  local_token=$(oc whoami -t 2>/dev/null || true)
+  if [[ -n "$local_token" ]]; then
+    MODEL_NAME=$(curl -sk "${MAAS_GATEWAY}/maas-api/v1/subscriptions" \
+      -H "Authorization: Bearer ${local_token}" 2>/dev/null \
+      | python3 -c "
+import sys, json
+subs = json.load(sys.stdin)
+if isinstance(subs, list) and len(subs) > 0:
+    # Prefer the first model from the first subscription
+    refs = subs[0].get('model_refs', [])
+    if refs:
+        print(refs[0].get('model_name', ''))
+" 2>/dev/null || true)
+    if [[ -n "$MODEL_NAME" ]]; then
+      info "Auto-detected model: ${MODEL_NAME}"
+    fi
+  fi
+fi
+
 info "Namespace:         ${NS}"
 info "MLflow namespace:  ${MLFLOW_NS}"
 info "MLflow endpoint:   ${MLFLOW_ENDPOINT}"
+if [[ -n "$MAAS_GATEWAY" ]]; then
+  info "MaaS Gateway:      ${MAAS_GATEWAY}"
+fi
+if [[ -n "$MODEL_NAME" ]]; then
+  info "Model:             ${MODEL_NAME}"
+fi
 $DRY_RUN && info "Mode: DRY RUN (no changes will be made)"
 echo ""
 
@@ -529,27 +586,92 @@ phase3_guardrails() {
       fi
     fi
 
-    # Step 3.3 — Ensure OPENAI_API_KEY secret exists
+    # Step 3.3 — Ensure OPENAI_API_KEY secret exists with a valid MaaS key
     local api_key_secret="nemoguardrails-api-key"
     info "Step 3.3 — Checking OPENAI_API_KEY secret..."
     if oc get secret "${api_key_secret}" -n "${NS}" &>/dev/null; then
-      ok "Secret '${api_key_secret}' already exists"
-    else
-      # Try to read the current OPENAI_API_KEY from the CR or deployment
-      local current_key
-      current_key=$(oc get nemoguardrails "${ngr_name}" -n "${NS}" \
-        -o jsonpath='{.spec.env[?(@.name=="OPENAI_API_KEY")].value}' 2>/dev/null || echo "")
-      if [[ -z "$current_key" ]]; then
-        current_key=$(oc get deployment "${deploy_name}" -n "${NS}" \
-          -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OPENAI_API_KEY")].value}' 2>/dev/null || echo "")
-      fi
-      if [[ -n "$current_key" ]]; then
-        info "  Migrating OPENAI_API_KEY to secret..."
-        run "oc create secret generic ${api_key_secret} -n ${NS} --from-literal=key='${current_key}'"
-        ok "OPENAI_API_KEY migrated to secret '${api_key_secret}'"
+      # Verify the key isn't a stub (< 20 base64 chars ≈ < 15 real bytes)
+      local key_len
+      key_len=$(oc get secret "${api_key_secret}" -n "${NS}" \
+        -o jsonpath='{.data.key}' 2>/dev/null | wc -c | tr -d ' ')
+      if [[ "$key_len" -gt 20 ]]; then
+        ok "Secret '${api_key_secret}' already exists with a valid key"
       else
-        warn "No OPENAI_API_KEY found. Set it manually:"
-        warn "  oc create secret generic ${api_key_secret} -n ${NS} --from-literal=key=<YOUR_MAAS_API_KEY>"
+        warn "Secret '${api_key_secret}' exists but key looks like a stub (${key_len} base64 chars)"
+        info "  Replacing with a real MaaS API key..."
+        oc delete secret "${api_key_secret}" -n "${NS}" --ignore-not-found 2>/dev/null
+        # Fall through to creation below
+      fi
+    fi
+
+    # Create a real MaaS API key if the secret doesn't exist (or was just deleted)
+    if ! oc get secret "${api_key_secret}" -n "${NS}" &>/dev/null; then
+      if $DRY_RUN; then
+        dry "Create MaaS API key and store in secret ${api_key_secret}"
+      elif [[ -n "$MAAS_GATEWAY" ]]; then
+        local oc_token
+        oc_token=$(oc whoami -t 2>/dev/null || true)
+        if [[ -n "$oc_token" ]]; then
+          # Discover the best subscription for this model
+          local subscription
+          subscription=$(curl -sk "${MAAS_GATEWAY}/maas-api/v1/subscriptions" \
+            -H "Authorization: Bearer ${oc_token}" 2>/dev/null \
+            | python3 -c "
+import sys, json
+subs = json.load(sys.stdin)
+if not isinstance(subs, list):
+    sys.exit(1)
+# Prefer premium/higher-priority tier, fall back to first
+best = subs[0] if subs else None
+for s in subs:
+    if s.get('priority', 0) > (best or {}).get('priority', 0):
+        best = s
+if best:
+    print(best.get('subscription_id_header', ''))
+" 2>/dev/null || true)
+
+          if [[ -n "$subscription" ]]; then
+            info "  Using MaaS subscription: ${subscription}"
+            local api_key
+            api_key=$(curl -sk -X POST "${MAAS_GATEWAY}/maas-api/v1/api-keys" \
+              -H "Authorization: Bearer ${oc_token}" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\":\"nemoguardrails-${NS}\",\"subscription\":\"${subscription}\",\"expiresIn\":\"168h\"}" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['key'])" 2>/dev/null || true)
+
+            if [[ -n "$api_key" ]]; then
+              oc create secret generic "${api_key_secret}" -n "${NS}" \
+                --from-literal=key="${api_key}"
+              ok "MaaS API key created (subscription=${subscription}, expires in 7 days)"
+            else
+              warn "Failed to create MaaS API key via gateway. Create one manually:"
+              warn "  See demo/guardrails-demo-flow.md ACT 2, Step 3"
+            fi
+          else
+            warn "No MaaS subscriptions found. Create the API key manually:"
+            warn "  See demo/guardrails-demo-flow.md ACT 2, Step 3"
+          fi
+        else
+          warn "Could not obtain token. Create the API key manually."
+        fi
+      else
+        # No MaaS gateway — try to migrate an existing plaintext key
+        local current_key
+        current_key=$(oc get nemoguardrails "${ngr_name}" -n "${NS}" \
+          -o jsonpath='{.spec.env[?(@.name=="OPENAI_API_KEY")].value}' 2>/dev/null || echo "")
+        if [[ -z "$current_key" ]]; then
+          current_key=$(oc get deployment "${deploy_name}" -n "${NS}" \
+            -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OPENAI_API_KEY")].value}' 2>/dev/null || echo "")
+        fi
+        if [[ -n "$current_key" ]]; then
+          info "  Migrating existing OPENAI_API_KEY to secret..."
+          oc create secret generic "${api_key_secret}" -n "${NS}" --from-literal=key="${current_key}"
+          ok "OPENAI_API_KEY migrated to secret '${api_key_secret}'"
+        else
+          warn "No MaaS gateway detected and no existing API key found."
+          warn "  Provide --maas-gateway <url> or create the key manually:"
+          warn "  oc create secret generic ${api_key_secret} -n ${NS} --from-literal=key=<YOUR_KEY>"
+        fi
       fi
     fi
 
@@ -587,43 +709,87 @@ phase3_guardrails() {
   # This is operator-proof: the env var is set in the CR, so the operator
   # cannot revert it.
 
-  # Step 3.6 — Update guardrail config to enable tracing
-  info "Step 3.6 — Enabling tracing in guardrail config..."
+  # Step 3.6 — Update guardrail config (model backend + tracing)
+  info "Step 3.6 — Updating guardrail config..."
   local config_yaml
   config_yaml=$(oc get configmap guardrail-placeholder -n "${NS}" \
     -o jsonpath='{.data.config\.yaml}' 2>/dev/null || echo "")
-  if echo "$config_yaml" | grep -q 'tracing:'; then
-    ok "Tracing already enabled in guardrail config — skipping"
+
+  if [[ -z "$config_yaml" ]]; then
+    warn "ConfigMap guardrail-placeholder not found or empty. Configure it manually."
   else
-    if [[ -n "$config_yaml" ]]; then
-      if $DRY_RUN; then
-        dry "Append tracing section to guardrail-placeholder ConfigMap config.yaml"
+    local needs_update=false
+
+    # Check if model backend is still pointing at placeholder
+    if echo "$config_yaml" | grep -q 'placeholder\.invalid'; then
+      if [[ -n "$MAAS_GATEWAY" ]] && [[ -n "$MODEL_NAME" ]]; then
+        info "  Model backend points to placeholder.invalid — updating to real MaaS endpoint"
+        needs_update=true
       else
-        # Build the patched config in a temp file to avoid shell quoting issues
+        warn "Guardrail model backend is 'placeholder.invalid' but no MaaS gateway/model detected."
+        warn "  Provide --maas-gateway and --model, or update the config manually."
+      fi
+    fi
+
+    # Check if tracing section is missing
+    if ! echo "$config_yaml" | grep -q 'tracing:'; then
+      info "  Tracing section missing — will add it"
+      needs_update=true
+    fi
+
+    if $needs_update; then
+      if $DRY_RUN; then
+        dry "Update guardrail-placeholder ConfigMap: model backend + tracing"
+      else
         local tmpfile
         tmpfile=$(mktemp)
         trap "rm -f '$tmpfile'" EXIT
         oc get configmap guardrail-placeholder -n "${NS}" -o json \
           | python3 -c "
-import sys, json
+import sys, json, re
+
 cm = json.load(sys.stdin)
 cfg = cm['data'].get('config.yaml', '')
-cfg += '''
+maas_gw = '${MAAS_GATEWAY}'
+model_name = '${MODEL_NAME}'
+
+# Update model backend if MaaS gateway is available and config has placeholder
+if maas_gw and model_name and 'placeholder.invalid' in cfg:
+    # Replace the model name
+    cfg = re.sub(r'model:\s*placeholder\b', f'model: {model_name}', cfg)
+    # Replace the base_url
+    cfg = re.sub(
+        r'base_url:\s*\"http://placeholder\.invalid/v1\"',
+        f'base_url: \"{maas_gw}/v1\"',
+        cfg
+    )
+
+# Add tracing section if missing
+if 'tracing:' not in cfg:
+    cfg += '''
 tracing:
   enabled: true
   enable_content_capture: true
   adapters:
     - name: OpenTelemetry
 '''
+
 cm['data']['config.yaml'] = cfg
 json.dump(cm, sys.stdout)
 " > "$tmpfile"
         oc apply -f "$tmpfile" -n "${NS}"
         rm -f "$tmpfile"
-        ok "Tracing enabled in guardrail config"
+
+        # Log what was updated
+        if echo "$config_yaml" | grep -q 'placeholder\.invalid' && [[ -n "$MAAS_GATEWAY" ]]; then
+          ok "Model backend updated: ${MAAS_GATEWAY}/v1 (model=${MODEL_NAME})"
+        fi
+        if ! echo "$config_yaml" | grep -q 'tracing:'; then
+          ok "Tracing enabled in guardrail config"
+        fi
       fi
     else
-      warn "ConfigMap guardrail-placeholder not found or empty. Add tracing config manually."
+      ok "Guardrail config already up to date — skipping"
     fi
   fi
 
