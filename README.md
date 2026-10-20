@@ -148,10 +148,11 @@ User prompt → OGX Playground ──→ MaaS Model (gpt-oss-20b)
 ./scripts/setup-mlflow-tracing.sh --namespace demo --skip-playground --skip-guardrails
 ```
 
-### What the Script Does (3 Phases)
+### What the Script Does (4 Phases)
 
 | Phase | Steps | Key Actions |
 |---|---|---|
+| **0. Playground Preflight** | Check OGXServer → Create if missing | If no Playground exists: creates NemoGuardrails CR, `guardrail-placeholder` ConfigMap, PgVector (5 resources), `llama-stack-config`, OGXServer CR. Skips if Playground already exists. |
 | **1. MLflow Setup** | Verify operator → Create CR → Create experiment | Ensures MLflow is running with a `guardrails-playground` experiment. Auto-patches workspace selector if namespace changed. |
 | **2. Playground Tracing** | RBAC → Auth secret → CA cert → Command wrap → Env vars | Activates `opentelemetry-instrument` on OGX with 11 OTEL env vars |
 | **3. NemoGuardrails Tracing** | RBAC → Auth secret → **MaaS API key** → CR env patch → **Model backend + tracing config** | Auto-detects MaaS gateway, creates a real API key, replaces `placeholder.invalid` with the real model endpoint, and uses `PYTHONPATH` for operator-proof OTEL SDK init |
@@ -160,6 +161,8 @@ User prompt → OGX Playground ──→ MaaS Model (gpt-oss-20b)
 
 | Decision | Rationale |
 |---|---|
+| Auto-create Playground (Phase 0) | If no OGXServer exists, creates NemoGuardrails + PgVector + OGXServer automatically; skips if Playground already exists |
+| `enable-auth` annotation on NGR CR | `security.opendatahub.io/enable-auth: "true"` triggers `kube-rbac-proxy` sidecar (HTTPS on 8443) — required for BFF communication |
 | `opentelemetry-instrument` for OGX | OGXServer CRD supports command overrides — operator-safe |
 | `PYTHONPATH` for NemoGuardrails | NemoGuardrails CRD has no command overrides; TrustyAI operator reverts deployment patches. `PYTHONPATH` triggers `sitecustomize.py` at Python startup — same effect, operator-proof |
 | 23 instrumentors disabled (OGX) | Keeps only `openai-v2` + `fastapi`, suppresses noisy HTTP/DB/template spans |
@@ -174,15 +177,14 @@ User prompt → OGX Playground ──→ MaaS Model (gpt-oss-20b)
 
 - **RHOAI 3.5+** with GenAI Studio / MaaS deployed
 - **`oc` CLI** logged in with cluster-admin or project-admin privileges
-- A **project created from the RHOAI Dashboard** (not from OpenShift):
-  > ⚠️ Projects created via `oc new-project` or the OpenShift console lack the
-  > RHOAI labels (`opendatahub.io/dashboard: 'true'`) and **will not appear** in
-  > the RHOAI Dashboard. Create the project from: Data Science Projects → Create.
-- An **OGX Playground already created** in the project:
-  > The setup script detects an existing Playground but does not create one.
-  > Create it first: RHOAI Dashboard → Applications → OGX Playground → Create.
-- Optionally, **NemoGuardrails deployed** (for guardrail tracing and the demo)
+- A **project/namespace** (e.g. `demo`) — can be created from the RHOAI Dashboard or
+  via `oc create namespace`. The script adds missing RHOAI labels automatically.
 - The **MLflow operator** enabled (`mlflowoperator: Managed` in the DataScienceCluster)
+
+> **Playground creation is automatic.** If no OGX Playground exists in the namespace,
+> the script creates one (Phase 0) with NemoGuardrails, PgVector, and the OGXServer.
+> If a Playground already exists (e.g. created from the Dashboard UI), Phase 0 is
+> skipped entirely.
 
 ---
 
@@ -199,6 +201,8 @@ See the full [troubleshooting section](docs/mlflow-tracing-guide.md#troubleshoot
 | `400 Bad Request` | Missing workspace headers | Ensure `X-MLflow-Workspace` + `X-MLflow-Experiment-Id` in OTEL headers secret |
 | Empty Chat tab in MLflow | Content capture misconfigured | Set `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental` + `span_only` |
 | Dozens of noisy spans per prompt | Instrumentors not filtered | Set `OTEL_PYTHON_DISABLED_INSTRUMENTATIONS` (23 for OGX, 3 for NGR) |
+| "Guardrail check was not applied" in UI | NemoGuardrails service on port 80 instead of 443 | Script auto-fixes; or manually: `oc patch svc nemoguardrails -n <ns> --type json -p '[{"op":"replace","path":"/spec/ports/0/port","value":443},{"op":"replace","path":"/spec/ports/0/targetPort","value":8443}]'` |
+| Model missing from Playground dropdown | `registered_resources.models` not in `llama-stack-config` | Re-create with model registration section; script handles this automatically |
 
 ---
 

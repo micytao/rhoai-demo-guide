@@ -78,6 +78,13 @@ const diagram = {
 
     "cluster": { "x": 100, "y": 20, "w": 1270, "h": 810, "type": "boundary", "label": "OpenShift Cluster \u00b7 RHOAI 3.5+ \u00b7 GenAI Studio" },
 
+    "c0_preflight": { "x": 500, "y": 60, "w": 340, "h": 280, "type": "container", "label": "\u24ea Phase 0: Playground Preflight", "color": "#ffa657" },
+    "n_ogx_check":  { "x": 520, "y": 100, "w": 145, "h": 36, "label": "OGXServer?", "sublabel": "check if exists", "color": "#ffa657", "fontSize": 11 },
+    "n_ngr_create":  { "x": 680, "y": 100, "w": 140, "h": 36, "label": "NemoGuardrails CR", "sublabel": "enable-auth annotation", "color": "#ffa657", "fontSize": 10 },
+    "n_pgvector":    { "x": 520, "y": 155, "w": 145, "h": 50, "label": "PgVector", "sublabel": "secret + PVC + deploy", "color": "#ffa657", "fontSize": 12 },
+    "n_llama_cfg":   { "x": 680, "y": 155, "w": 140, "h": 50, "label": "llama-stack-config", "sublabel": "model registration", "color": "#ffa657", "fontSize": 10 },
+    "n_ogx_create":  { "x": 520, "y": 225, "w": 300, "h": 44, "label": "OGXServer CR", "sublabel": "lsd-genai-playground + svc port fix", "color": "#ffa657", "fontSize": 13 },
+
     "c1_mlflow": { "x": 130, "y": 60, "w": 340, "h": 280, "type": "container", "label": "\u2460 Phase 1: MLflow Setup", "color": "#58a6ff" },
     "n_dsc":       { "x": 150, "y": 100, "w": 145, "h": 36, "label": "DSC", "sublabel": "mlflowoperator: Managed", "color": "#58a6ff", "fontSize": 11 },
     "n_mlflow_crd": { "x": 310, "y": 100, "w": 140, "h": 36, "label": "MLflow CRD", "color": "#58a6ff", "fontSize": 12 },
@@ -120,6 +127,50 @@ const diagram = {
     "n_cert_debian": { "x": 1130, "y": 735, "w": 200, "h": 50, "label": "Debian cert path", "sublabel": "/etc/ssl/certs/ca-certificates.crt", "color": "#8b949e", "fontSize": 10 }
   },
   "tooltips": {
+    "n_ogx_check": {
+      "title": "Playground Preflight Check",
+      "description": "Checks if an OGXServer exists in the namespace. If found, Phase 0 is skipped entirely. If not, the script creates the full Playground stack automatically.",
+      "details": [
+        ["Check", "oc get ogxservers.ogx.io -n <ns>"],
+        ["If exists", "Skip creation, proceed to Phase 1"],
+        ["If missing", "Create NemoGuardrails + PgVector + OGXServer"]
+      ]
+    },
+    "n_ngr_create": {
+      "title": "NemoGuardrails CR Creation",
+      "description": "Creates the NemoGuardrails CR with the enable-auth annotation. This annotation triggers the TrustyAI operator to add a kube-rbac-proxy sidecar for HTTPS.",
+      "details": [
+        ["Annotation", "security.opendatahub.io/enable-auth: true"],
+        ["Effect", "Adds kube-rbac-proxy sidecar (port 8443)"],
+        ["Required by", "Dashboard BFF expects HTTPS on port 443"]
+      ]
+    },
+    "n_pgvector": {
+      "title": "PgVector Resources",
+      "description": "Five resources for the vector database: credentials secret (random password), init script ConfigMap, 5Gi PVC, Service (port 5432), and PostgreSQL 16 Deployment.",
+      "details": [
+        ["Resources", "Secret, ConfigMap, PVC, Service, Deployment"],
+        ["Image", "registry.redhat.io/rhel9/postgresql-16"],
+        ["Database", "vectordb (user: vectoruser)"]
+      ]
+    },
+    "n_llama_cfg": {
+      "title": "llama-stack-config ConfigMap",
+      "description": "OGX configuration with model registration, inference providers, and vector_io. Two labels are required for the OGX operator to find it.",
+      "details": [
+        ["Label 1", "ogx.io/watch: true"],
+        ["Label 2", "ogx.io/server: lsd-genai-playground"],
+        ["Key section", "registered_resources.models (makes model appear in UI)"]
+      ]
+    },
+    "n_ogx_create": {
+      "title": "OGXServer CR + Service Fix",
+      "description": "Creates the OGXServer CR and waits for deployment. Then fixes the NemoGuardrails service port \u2014 the enable-auth annotation adds kube-rbac-proxy but the operator may not update the Service from 80\u2192443.",
+      "details": [
+        ["Service fix", "80:8000 \u2192 443:8443"],
+        ["Why needed", "BFF expects HTTPS on port 443"]
+      ]
+    },
     "admin": {
       "title": "Admin / CLI",
       "description": "Runs setup-mlflow-tracing.sh to wire OTEL tracing from Playground and NemoGuardrails into MLflow. The script is idempotent \u2014 safe to run multiple times.",
@@ -421,31 +472,37 @@ const diagram = {
   },
   "flows": {
     "setup": {
-      "label": "Full Setup (Phases 1\u20133)",
+      "label": "Full Setup (Phases 0\u20133)",
       "steps": [
-        { "text": "1. Admin runs setup-mlflow-tracing.sh", "mode": "arrow", "from": "admin", "to": "c1_mlflow", "color": "#58a6ff", "num": 1, "glow": "c1_mlflow" },
-        { "text": "2. Verify mlflowoperator is Managed in the DSC", "mode": "lightup", "target": "n_dsc", "badge": "\u2713" },
-        { "text": "3. Wait for MLflow CRD to appear (up to 60s)", "mode": "lightup", "target": "n_mlflow_crd", "badge": 3 },
-        { "text": "4. Create MLflow CR (name must be 'mlflow' \u2014 singleton)", "mode": "lightup", "target": "n_mlflow_cr", "badge": 4 },
-        { "text": "5. Wait for MLflow pod to be ready in redhat-ods-applications", "mode": "lightup", "target": "n_mlflow_pod", "badge": 5 },
-        { "text": "6. Create experiment 'guardrails-playground' via MLflow API", "mode": "lightup", "target": "n_experiment", "badge": 6 },
-        { "text": "7. Phase 2: Configure Playground tracing", "mode": "arrow", "from": "c1_mlflow", "to": "c2_playground", "color": "#3fb950", "num": 7, "glow": "c2_playground" },
-        { "text": "8. Find OGXServer and detect the Playground SA", "mode": "lightup", "target": "n_ogxserver", "badge": 8 },
-        { "text": "9. Grant SA the edit role for MLflow kubernetes-auth", "mode": "lightup", "target": "n_pgnd_sa", "badge": 9 },
-        { "text": "10. Create auth secret with SA token + workspace headers", "mode": "lightup", "target": "n_otel_secret", "badge": 10 },
-        { "text": "11. Mount service-CA cert volume (config-service-cabundle)", "mode": "lightup", "target": "n_svc_ca", "badge": 11 },
-        { "text": "12. Wrap command: opentelemetry-instrument ogx run ...", "mode": "lightup", "target": "n_otel_wrap", "badge": 12 },
-        { "text": "13. Set 11 OTEL env vars (endpoint, headers, content capture, noise filter)", "mode": "lightup", "target": "n_otel_env", "badge": 13 },
-        { "text": "14. Disable 23 noisy instrumentors, keep openai-v2 + fastapi", "mode": "lightup", "target": "n_pgnd_disabled", "badge": 14 },
-        { "text": "15. Phase 3: Configure NemoGuardrails tracing", "mode": "arrow", "from": "c2_playground", "to": "c3_guardrails", "color": "#d2a8ff", "num": 15, "glow": "c3_guardrails" },
-        { "text": "16. Find NemoGuardrails CR and detect SA", "mode": "lightup", "target": "n_ngr_cr", "badge": 16 },
-        { "text": "17. Grant SA the edit role + MLflow ClusterRole", "mode": "lightup", "target": "n_ngr_sa", "badge": 17 },
-        { "text": "18. Create auth secret for NemoGuardrails", "mode": "lightup", "target": "n_ngr_secret", "badge": 18 },
-        { "text": "19. Create MaaS API key via gateway API (7-day expiry)", "mode": "lightup", "target": "n_apikey", "badge": 19 },
-        { "text": "20. Patch CR spec.env with OTEL vars + API key secretKeyRef", "mode": "lightup", "target": "n_ngr_env", "badge": 20 },
-        { "text": "21. Set PYTHONPATH for auto-instrumentation (operator-proof!)", "mode": "lightup", "target": "n_ngr_cmd", "badge": "\u2713" },
-        { "text": "22. Update model backend (placeholder \u2192 MaaS) + enable tracing", "mode": "lightup", "target": "n_tracing_cfg", "badge": 22 },
-        { "text": "23. Setup complete \u2014 traces flow to MLflow on next prompt", "mode": "arrow", "from": "c3_guardrails", "to": "n_mlflow", "color": "#3fb950", "num": 23 }
+        { "text": "1. Admin runs setup-mlflow-tracing.sh", "mode": "arrow", "from": "admin", "to": "c0_preflight", "color": "#ffa657", "num": 1, "glow": "c0_preflight" },
+        { "text": "2. Check: does an OGXServer exist in the namespace?", "mode": "lightup", "target": "n_ogx_check", "badge": "?" },
+        { "text": "3. No Playground found \u2014 creating NemoGuardrails CR (enable-auth)", "mode": "lightup", "target": "n_ngr_create", "badge": 3 },
+        { "text": "4. Create PgVector: secret + init CM + PVC + svc + deployment", "mode": "lightup", "target": "n_pgvector", "badge": 4 },
+        { "text": "5. Create llama-stack-config with model registration + ogx.io labels", "mode": "lightup", "target": "n_llama_cfg", "badge": 5 },
+        { "text": "6. Create OGXServer CR, wait for deployments, fix NGR svc port 80\u2192443", "mode": "lightup", "target": "n_ogx_create", "badge": 6 },
+        { "text": "7. Phase 1: Set up MLflow", "mode": "arrow", "from": "c0_preflight", "to": "c1_mlflow", "color": "#58a6ff", "num": 7, "glow": "c1_mlflow" },
+        { "text": "8. Verify mlflowoperator is Managed in the DSC", "mode": "lightup", "target": "n_dsc", "badge": "\u2713" },
+        { "text": "9. Wait for MLflow CRD to appear (up to 60s)", "mode": "lightup", "target": "n_mlflow_crd", "badge": 9 },
+        { "text": "10. Create MLflow CR (name must be 'mlflow' \u2014 singleton)", "mode": "lightup", "target": "n_mlflow_cr", "badge": 10 },
+        { "text": "11. Wait for MLflow pod to be ready in redhat-ods-applications", "mode": "lightup", "target": "n_mlflow_pod", "badge": 11 },
+        { "text": "12. Create experiment 'guardrails-playground' via MLflow API", "mode": "lightup", "target": "n_experiment", "badge": 12 },
+        { "text": "13. Phase 2: Configure Playground tracing", "mode": "arrow", "from": "c1_mlflow", "to": "c2_playground", "color": "#3fb950", "num": 13, "glow": "c2_playground" },
+        { "text": "14. Find OGXServer and detect the Playground SA", "mode": "lightup", "target": "n_ogxserver", "badge": 14 },
+        { "text": "15. Grant SA the edit role for MLflow kubernetes-auth", "mode": "lightup", "target": "n_pgnd_sa", "badge": 15 },
+        { "text": "16. Create auth secret with SA token + workspace headers", "mode": "lightup", "target": "n_otel_secret", "badge": 16 },
+        { "text": "17. Mount service-CA cert volume (config-service-cabundle)", "mode": "lightup", "target": "n_svc_ca", "badge": 17 },
+        { "text": "18. Wrap command: opentelemetry-instrument ogx run ...", "mode": "lightup", "target": "n_otel_wrap", "badge": 18 },
+        { "text": "19. Set 11 OTEL env vars (endpoint, headers, content capture, noise filter)", "mode": "lightup", "target": "n_otel_env", "badge": 19 },
+        { "text": "20. Disable 23 noisy instrumentors, keep openai-v2 + fastapi", "mode": "lightup", "target": "n_pgnd_disabled", "badge": 20 },
+        { "text": "21. Phase 3: Configure NemoGuardrails tracing", "mode": "arrow", "from": "c2_playground", "to": "c3_guardrails", "color": "#d2a8ff", "num": 21, "glow": "c3_guardrails" },
+        { "text": "22. Find NemoGuardrails CR and detect SA", "mode": "lightup", "target": "n_ngr_cr", "badge": 22 },
+        { "text": "23. Grant SA the edit role + MLflow ClusterRole", "mode": "lightup", "target": "n_ngr_sa", "badge": 23 },
+        { "text": "24. Create auth secret for NemoGuardrails", "mode": "lightup", "target": "n_ngr_secret", "badge": 24 },
+        { "text": "25. Create MaaS API key via gateway API (7-day expiry)", "mode": "lightup", "target": "n_apikey", "badge": 25 },
+        { "text": "26. Patch CR spec.env with OTEL vars + API key secretKeyRef", "mode": "lightup", "target": "n_ngr_env", "badge": 26 },
+        { "text": "27. Set PYTHONPATH for auto-instrumentation (operator-proof!)", "mode": "lightup", "target": "n_ngr_cmd", "badge": "\u2713" },
+        { "text": "28. Update model backend (placeholder \u2192 MaaS) + enable tracing", "mode": "lightup", "target": "n_tracing_cfg", "badge": 28 },
+        { "text": "29. Setup complete \u2014 traces flow to MLflow on next prompt", "mode": "arrow", "from": "c3_guardrails", "to": "n_mlflow", "color": "#3fb950", "num": 29 }
       ]
     },
     "trace_allowed": {

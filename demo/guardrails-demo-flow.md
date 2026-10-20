@@ -15,41 +15,29 @@
 
 Before running this demo, ensure:
 
-1. **Create the project from the RHOAI Dashboard** (Data Science Projects → Create),
-   **not** from the OpenShift console or `oc new-project`. Projects created directly
-   in OpenShift lack the RHOAI labels and won't appear in the Dashboard for creating
-   Playgrounds or deploying NemoGuardrails.
+1. **Create the project** — either from the RHOAI Dashboard (Data Science Projects
+   → Create) or via `oc create namespace`. The setup script adds any missing RHOAI
+   labels automatically.
 
-2. **Create an OGX Playground** in the project from the RHOAI Dashboard:
-   Applications → OGX Playground → Create. The tracing script and this demo
-   expect an existing Playground — they do not create one.
-
-3. **NemoGuardrails is auto-provisioned** — you do **not** need to deploy it manually.
-   When the Dashboard creates a Playground, the BFF (Backend-for-Frontend) automatically
-   provisions three resources in this order:
-
-   | Step | Resource | Purpose |
-   |------|----------|---------|
-   | 1 | **NemoGuardrails** CR + `guardrail-placeholder` ConfigMap | Guardrail service (default policy) |
-   | 2 | **PgVector** database | Vector store for RAG |
-   | 3 | **OGXServer** + `llama-stack-config` ConfigMap | The Playground itself |
-
-   The auto-provisioned NemoGuardrails starts with **stub configuration**:
-   - `OPENAI_API_KEY: fake` — not a real API key
-   - `guardrail-placeholder` ConfigMap points to `http://placeholder.invalid/v1`
-
-   This means guardrails exist but **won't actually work** until the setup script
-   replaces the stub API key, model backend, and wires tracing (Step 4 below).
-
-4. **Run the setup script** to wire tracing and configure the guardrails model backend:
+2. **Run the setup script:**
    ```bash
    ./scripts/setup-mlflow-tracing.sh --namespace <your-project>
    ```
-   This auto-detects the MaaS gateway, creates a real API key for the LLM judge,
-   replaces the `placeholder.invalid` model backend, enables tracing, and wires
-   both Playground and NemoGuardrails to export traces to MLflow.
+   The script handles everything automatically in 4 phases:
+
+   | Phase | What it does |
+   |-------|-------------|
+   | **0. Playground Preflight** | If no Playground exists, creates one automatically: NemoGuardrails CR + `guardrail-placeholder` ConfigMap + PgVector (5 resources) + `llama-stack-config` ConfigMap + OGXServer CR. If a Playground already exists, skips creation entirely. |
+   | **1. MLflow Setup** | Enables MLflow operator, creates CR + experiment |
+   | **2. Playground Tracing** | Wires OTEL tracing from the Playground to MLflow |
+   | **3. NemoGuardrails Tracing** | Auto-detects MaaS gateway, creates a real API key, replaces the `placeholder.invalid` model backend, enables tracing, and wires NemoGuardrails to MLflow |
+
    After this, ACT 2 Steps 2–4 are already done — you only need Step 1 (policy
    rules) and Step 6 (enable guardrails in the Playground).
+
+   > **Note:** If the Playground was created from the Dashboard UI instead of by the
+   > script, that works too — the script detects the existing Playground and skips
+   > Phase 0 creation.
 
 ---
 
@@ -583,6 +571,27 @@ print('PATCHED' if 'body.guardrails.config = None' in c else 'NOT PATCHED')
 
 # 5. If NOT PATCHED, re-run the setup script:
 #    ./scripts/setup-mlflow-tracing.sh --namespace demo --skip-mlflow --skip-playground
+```
+
+**"Guardrail check was not applied" in the UI?**
+
+The Dashboard BFF expects NemoGuardrails on HTTPS port 443 with a `kube-rbac-proxy`
+sidecar. Check:
+
+```bash
+# Service must be 443:8443, not 80:8000
+oc get svc nemoguardrails -n demo -o jsonpath='{.spec.ports[0].port}:{.spec.ports[0].targetPort}'
+
+# Deployment must have 2 containers (nemo-guardrails + kube-rbac-proxy)
+oc get deployment nemoguardrails -n demo -o jsonpath='{range .spec.template.spec.containers[*]}{.name}{"\n"}{end}'
+
+# Fix if needed:
+oc annotate nemoguardrails nemoguardrails -n demo "security.opendatahub.io/enable-auth=true" --overwrite
+sleep 20
+oc patch svc nemoguardrails -n demo --type json -p '[
+  {"op":"replace","path":"/spec/ports/0/port","value":443},
+  {"op":"replace","path":"/spec/ports/0/targetPort","value":8443}
+]'
 ```
 
 **Playground not connecting to guardrails?**

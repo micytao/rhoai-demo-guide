@@ -42,6 +42,17 @@ the Playground and NemoGuardrails into MLflow, giving you:
 
 ```mermaid
 flowchart TD
+    subgraph phase0 [Phase 0: Playground Preflight]
+        Z0{OGXServer exists?}
+        Z0 -->|Yes| Z1[Skip creation]
+        Z0 -->|No| Z2[Create NemoGuardrails CR]
+        Z2 --> Z3[Create guardrail-placeholder ConfigMap]
+        Z3 --> Z4[Create PgVector resources]
+        Z4 --> Z5[Create llama-stack-config ConfigMap]
+        Z5 --> Z6[Create OGXServer CR]
+        Z6 --> Z7[Wait for all deployments]
+        Z7 --> Z8[Fix NemoGuardrails service port if needed]
+    end
     subgraph phase1 [Phase 1: MLflow]
         A[Check DSC mlflowoperator] --> B{MLflow CR exists?}
         B -->|No| C[Create MLflow CR]
@@ -71,6 +82,7 @@ flowchart TD
         S --> U[Verify trace export]
         T2 --> U
     end
+    phase0 --> phase1
     phase1 --> phase2
     phase2 --> phase3
 ```
@@ -98,30 +110,30 @@ Click any node for a detailed tooltip with `oc` commands and config values.
 
 - **RHOAI 3.5+** with GenAI Studio or MaaS deployed
 - **`oc` CLI** logged in with cluster-admin or project-admin privileges
-- A **project/namespace** (e.g. `demo`) created **from the RHOAI Dashboard**:
-  > **Important:** Create the project from the RHOAI Dashboard (Data Science
-  > Projects → Create), **not** from the OpenShift console or `oc new-project`.
-  > Projects created directly in OpenShift lack the RHOAI labels
-  > (`opendatahub.io/dashboard: 'true'`) and will not appear in the RHOAI
-  > Dashboard — you won't be able to create Playgrounds, deploy NemoGuardrails,
-  > or use other GenAI Studio features in that project.
-- An **OGX Playground already created** in the project:
-  > The script detects an existing OGXServer but does **not** create one.
-  > Create it first from the RHOAI Dashboard: Applications → OGX Playground → Create.
-- **NemoGuardrails** — automatically provisioned when a Playground is created (see below)
+- A **project/namespace** (e.g. `demo`) — can be created from the RHOAI Dashboard or
+  via `oc create namespace`. The script adds missing RHOAI labels automatically.
 - The **MLflow operator** enabled in the DataScienceCluster (`mlflowoperator: Managed`)
 
-### Automatic Provisioning Chain
+> **Playground creation is automatic.** If no OGX Playground exists in the namespace,
+> the script creates one (Phase 0): NemoGuardrails CR, `guardrail-placeholder`
+> ConfigMap, PgVector database, `llama-stack-config` ConfigMap, and OGXServer CR.
+> If a Playground already exists (e.g. created from the Dashboard UI), Phase 0 is
+> skipped entirely.
 
-When you click **"Create Playground"** in the RHOAI Dashboard, the Dashboard BFF
-(Backend-for-Frontend, the `gen-ai-ui` pod) orchestrates a 3-step provisioning
-sequence — **you do not need to create NemoGuardrails separately**:
+### Automatic Provisioning (Phase 0)
 
-| Order | Resource | What | Manager |
-|-------|----------|------|---------|
-| 1 | `NemoGuardrails` CR + `guardrail-placeholder` ConfigMap | Guardrail service with default (stub) policy | `bff` → reconciled by TrustyAI operator |
-| 2 | `genai-pgvector` Deployment | PgVector database for RAG vector store | `bff` |
-| 3 | `OGXServer` CR + `llama-stack-config` ConfigMap | The Playground itself | `bff` → reconciled by OGX operator |
+The setup script creates a Playground automatically if one doesn't exist. This
+replicates the same provisioning sequence the Dashboard BFF performs when you
+click "Create Playground" in the UI:
+
+| Step | Resource | What | Notes |
+|------|----------|------|-------|
+| 0.1 | `NemoGuardrails` CR | Guardrail service with `enable-auth` annotation | `security.opendatahub.io/enable-auth: "true"` triggers kube-rbac-proxy sidecar |
+| 0.1b | `guardrail-placeholder` ConfigMap | Guardrail config with stub model backend | Operator needs this to create the deployment |
+| 0.2 | PgVector resources (5) | Secret, init ConfigMap, PVC, Service, Deployment | Vector store for RAG |
+| 0.3 | `llama-stack-config` ConfigMap | OGX config with model registration | Requires `ogx.io/watch` and `ogx.io/server` labels |
+| 0.4 | `OGXServer` CR | The Playground itself | References llama-stack-config |
+| 0.5 | Wait + service fix | Wait for all deployments; fix NGR service port | Operator may not update service from 80→443 |
 
 > **The auto-provisioned NemoGuardrails starts with stub configuration:**
 > - `OPENAI_API_KEY: fake` — not a real API key
@@ -129,14 +141,12 @@ sequence — **you do not need to create NemoGuardrails separately**:
 > - No OTEL tracing env vars
 >
 > This means the guardrail pod is running but **won't actually evaluate content**
-> until the setup script (or manual steps) replaces the stub API key, updates the
-> model backend URL, and wires the tracing pipeline.
+> until Phases 2–3 replace the stub API key, update the model backend URL, and wire
+> the tracing pipeline.
 >
-> You can verify this by checking the BFF logs after creating a Playground:
-> ```bash
-> oc logs -n redhat-ods-applications deployment/gen-ai-ui --since=5m \
->   | grep -E 'NemoGuardrails|OGXServer|pgvector'
-> ```
+> **If a Playground already exists** (e.g. created from the Dashboard UI), Phase 0
+> is skipped entirely — the script prints `"Playground already exists — skipping
+> creation"` and proceeds directly to Phase 1.
 
 ## Quick Start
 
@@ -170,6 +180,58 @@ sequence — **you do not need to create NemoGuardrails separately**:
 | `--dry-run` | | Show what would be done without making changes |
 
 ## What the Script Does
+
+### Phase 0: Playground Preflight
+
+The script checks for an existing OGXServer in the namespace. If found, Phase 0
+is skipped. If not, it creates the full Playground stack:
+
+#### Step 0.1 — Create NemoGuardrails CR
+
+The CR includes the `security.opendatahub.io/enable-auth: "true"` annotation,
+which tells the TrustyAI operator to add a `kube-rbac-proxy` sidecar container.
+This sidecar provides HTTPS on port 8443, which the Dashboard BFF requires to
+communicate with NemoGuardrails.
+
+#### Step 0.1b — Create guardrail-placeholder ConfigMap
+
+The NemoGuardrails operator needs this ConfigMap to exist before it will create
+the deployment. It contains stub guardrail config (model at `placeholder.invalid`,
+self-check input/output rails, prompt templates). Phase 3 later updates it with
+the real MaaS endpoint and tracing config.
+
+#### Step 0.2 — Create PgVector resources
+
+Five resources required by the Playground for vector storage (RAG):
+- `genai-pgvector-credentials` Secret (random password)
+- `genai-pgvector-init` ConfigMap (enables pgvector extension)
+- `genai-pgvector-storage` PVC (5Gi)
+- `genai-pgvector` Service (port 5432)
+- `genai-pgvector` Deployment (PostgreSQL 16)
+
+#### Step 0.3 — Create llama-stack-config ConfigMap
+
+The OGX config with model registration, inference providers, vector_io, and
+storage backends. **Two labels are required** for the OGX operator to find it:
+- `ogx.io/watch: "true"`
+- `ogx.io/server: lsd-genai-playground`
+
+The `registered_resources.models` section registers the auto-detected model so
+it appears in the Playground UI dropdown.
+
+#### Step 0.4 — Create OGXServer CR
+
+The Playground CR referencing `llama-stack-config`, with env vars for PgVector,
+HuggingFace offline mode, and MaaS gateway token.
+
+#### Step 0.5 — Wait and fix service port
+
+Waits for NemoGuardrails, PgVector, and Playground deployments to roll out. Then
+checks the NemoGuardrails service port — the `enable-auth` annotation adds the
+`kube-rbac-proxy` sidecar (port 8443), but the operator may not update the
+Service from 80→443. The script patches it if needed.
+
+---
 
 ### Phase 1: MLflow Setup
 
@@ -755,6 +817,48 @@ oc get deployment lsd-genai-playground -n demo \
 # Check disabled instrumentors
 oc exec deployment/lsd-genai-playground -n demo -- sh -c 'echo $OTEL_PYTHON_DISABLED_INSTRUMENTATIONS'
 ```
+
+### "Guardrail check was not applied" in the Playground UI
+
+**Symptom:** Input guardrail is toggled on but the UI shows "Guardrail check was not
+applied" after a timeout.
+
+**Cause:** The NemoGuardrails service is on port 80 instead of 443. The Dashboard BFF
+expects HTTPS on port 443 (targeting the `kube-rbac-proxy` sidecar on 8443). Without
+the `security.opendatahub.io/enable-auth: "true"` annotation on the NemoGuardrails CR,
+the operator doesn't add the RBAC proxy. Even with the annotation, the operator may not
+update the service port.
+
+```bash
+# Check service port
+oc get svc nemoguardrails -n <ns> -o jsonpath='{.spec.ports[0].port}:{.spec.ports[0].targetPort}'
+# Should be 443:8443, not 80:8000
+
+# Fix: add annotation and patch service
+oc annotate nemoguardrails nemoguardrails -n <ns> \
+  "security.opendatahub.io/enable-auth=true" --overwrite
+sleep 20
+oc patch svc nemoguardrails -n <ns> --type json -p '[
+  {"op": "replace", "path": "/spec/ports/0/port", "value": 443},
+  {"op": "replace", "path": "/spec/ports/0/targetPort", "value": 8443}
+]'
+```
+
+### Model missing from Playground UI dropdown
+
+**Symptom:** Playground loads but no models appear in the model selector.
+
+**Cause:** The `llama-stack-config` ConfigMap is missing the `registered_resources.models`
+section. The script creates this automatically, but if you created the ConfigMap manually
+you may have omitted it.
+
+```bash
+# Check if models are registered
+oc get configmap llama-stack-config -n <ns> -o jsonpath='{.data.config\.yaml}' | grep -A5 registered_resources
+```
+
+**Fix:** Re-run the script to recreate the ConfigMap, or add the `registered_resources`
+section manually with the model `provider_id`, `model_id`, and `model_type: llm`.
 
 ### NemoGuardrails traces stop appearing
 
