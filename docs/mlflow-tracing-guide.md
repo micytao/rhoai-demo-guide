@@ -108,8 +108,35 @@ Click any node for a detailed tooltip with `oc` commands and config values.
 - An **OGX Playground already created** in the project:
   > The script detects an existing OGXServer but does **not** create one.
   > Create it first from the RHOAI Dashboard: Applications → OGX Playground → Create.
-- Optionally, **NemoGuardrails deployed** in the project (for guardrail tracing)
+- **NemoGuardrails** — automatically provisioned when a Playground is created (see below)
 - The **MLflow operator** enabled in the DataScienceCluster (`mlflowoperator: Managed`)
+
+### Automatic Provisioning Chain
+
+When you click **"Create Playground"** in the RHOAI Dashboard, the Dashboard BFF
+(Backend-for-Frontend, the `gen-ai-ui` pod) orchestrates a 3-step provisioning
+sequence — **you do not need to create NemoGuardrails separately**:
+
+| Order | Resource | What | Manager |
+|-------|----------|------|---------|
+| 1 | `NemoGuardrails` CR + `guardrail-placeholder` ConfigMap | Guardrail service with default (stub) policy | `bff` → reconciled by TrustyAI operator |
+| 2 | `genai-pgvector` Deployment | PgVector database for RAG vector store | `bff` |
+| 3 | `OGXServer` CR + `llama-stack-config` ConfigMap | The Playground itself | `bff` → reconciled by OGX operator |
+
+> **The auto-provisioned NemoGuardrails starts with stub configuration:**
+> - `OPENAI_API_KEY: fake` — not a real API key
+> - `guardrail-placeholder` ConfigMap points to `http://placeholder.invalid/v1`
+> - No OTEL tracing env vars
+>
+> This means the guardrail pod is running but **won't actually evaluate content**
+> until the setup script (or manual steps) replaces the stub API key, updates the
+> model backend URL, and wires the tracing pipeline.
+>
+> You can verify this by checking the BFF logs after creating a Playground:
+> ```bash
+> oc logs -n redhat-ods-applications deployment/gen-ai-ui --since=5m \
+>   | grep -E 'NemoGuardrails|OGXServer|pgvector'
+> ```
 
 ## Quick Start
 
@@ -361,9 +388,11 @@ the newer GenAI attribute names.
 
 ### Phase 3: NemoGuardrails Tracing
 
-NemoGuardrails has its own built-in tracing system that creates spans for rail
-evaluations and LLM judge calls. Like OGX, it needs the OTEL SDK initialized and
-configured to export to MLflow.
+NemoGuardrails is automatically provisioned alongside every Playground (see
+[Automatic Provisioning Chain](#automatic-provisioning-chain) above). It has its own
+built-in tracing system that creates spans for rail evaluations and LLM judge calls.
+Like OGX, it needs the OTEL SDK initialized and configured to export to MLflow — the
+auto-provisioned pod has no tracing configured by default.
 
 #### Step 3.1 — Grant the NemoGuardrails SA access to MLflow
 

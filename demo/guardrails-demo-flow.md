@@ -24,8 +24,22 @@ Before running this demo, ensure:
    Applications → OGX Playground → Create. The tracing script and this demo
    expect an existing Playground — they do not create one.
 
-3. **Deploy NemoGuardrails** in the project (needed for ACTs 2–5). This can be done
-   from the RHOAI Dashboard under Applications → NemoGuardrails.
+3. **NemoGuardrails is auto-provisioned** — you do **not** need to deploy it manually.
+   When the Dashboard creates a Playground, the BFF (Backend-for-Frontend) automatically
+   provisions three resources in this order:
+
+   | Step | Resource | Purpose |
+   |------|----------|---------|
+   | 1 | **NemoGuardrails** CR + `guardrail-placeholder` ConfigMap | Guardrail service (default policy) |
+   | 2 | **PgVector** database | Vector store for RAG |
+   | 3 | **OGXServer** + `llama-stack-config` ConfigMap | The Playground itself |
+
+   The auto-provisioned NemoGuardrails starts with **stub configuration**:
+   - `OPENAI_API_KEY: fake` — not a real API key
+   - `guardrail-placeholder` ConfigMap points to `http://placeholder.invalid/v1`
+
+   This means guardrails exist but **won't actually work** until the setup script
+   replaces the stub API key, model backend, and wires tracing (Step 4 below).
 
 4. **Run the setup script** to wire tracing and configure the guardrails model backend:
    ```bash
