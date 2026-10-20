@@ -412,15 +412,26 @@ oc patch ogxserver lsd-genai-playground -n demo --type merge -p '{
 ```
 
 **For NemoGuardrails:** The CRD does not support command overrides, and the TrustyAI
-operator reverts any direct deployment patches. Instead, `PYTHONPATH` is set via the
-CR's `spec.env` to point at the auto-instrumentation `sitecustomize.py`:
+operator reverts any direct deployment patches. Two mechanisms work together:
+
+**a) OTEL auto-instrumentation via PYTHONPATH:** `PYTHONPATH` in the CR's `spec.env`
+points at a custom `sitecustomize.py` that initializes the OTEL SDK at Python startup —
+same effect as `opentelemetry-instrument`, but operator-proof.
+
+**b) BFF inline-config patch via `startup-patch` ConfigMap:** The RHOAI Dashboard BFF
+sends inline guardrails configuration in every `/v1/guardrail/checks` request. The
+NemoGuardrails fork rejects inline configs outright (returns an error before any
+processing or tracing occurs). A `sitecustomize.py` in a ConfigMap mounted via
+`spec.nemoConfigs` patches `checks.py` at Python startup to ignore the inline config
+and fall through to the server's default config (`guardrail-placeholder`). This is
+prepended to `PYTHONPATH` so it runs first, then chains to the OTEL initializer:
 
 ```
-PYTHONPATH=/app/.venv/lib64/python3.12/site-packages/opentelemetry/instrumentation/auto_instrumentation
+PYTHONPATH=/app/config/startup-patch:/app/.venv/lib64/python3.12/site-packages/opentelemetry/instrumentation/auto_instrumentation
 ```
 
-Python loads `sitecustomize.py` from `PYTHONPATH` at startup, which initializes the
-OTEL SDK — same effect as `opentelemetry-instrument`, but operator-proof.
+Both the ConfigMap and the `PYTHONPATH` are set via CRD fields (`spec.nemoConfigs` and
+`spec.env`), so they survive operator reconciliation and pod restarts.
 
 **6. Patch the OGXServer with OTEL env vars**
 
@@ -457,21 +468,27 @@ Open the RHOAI Dashboard:
 
 > RHOAI Dashboard → MLflow → `guardrails-playground` experiment → **Traces** tab
 
-Each Playground interaction appears as a trace showing:
+Each Playground interaction produces **3 traces** per message:
 
-- Full request/response lifecycle (input prompt and model output)
-- Guardrail evaluation result (blocked vs. allowed)
-- Latency breakdown across the inference pipeline
-- Token usage per request
+| # | Service | Trace | What it shows |
+|---|---------|-------|---------------|
+| 1 | `playground` | Chat completion | The LLM call: input prompt, model response, token usage, latency |
+| 2 | `nemoguardrails` | Input guardrail | `self_check_input` rail execution: LLM-as-judge evaluation of the user message |
+| 3 | `nemoguardrails` | Output guardrail | `self_check_output` rail execution: LLM-as-judge evaluation of the model response |
+
+> **Why 2 guardrail traces?** The BFF makes separate `/v1/guardrail/checks` calls
+> for input and output rails. Each produces its own trace showing the rail name,
+> LLM judge prompt, judge verdict (allowed/blocked), and token usage.
 
 ### What to show in the demo
 
 1. Open MLflow Traces in the `guardrails-playground` experiment
-2. Find a **blocked** request (Prompt C, D, or E) — the trace shows the guardrail
+2. Point out the **3 traces per message** pattern: 1 chat + 2 guardrails
+3. Find a **blocked** request (Prompt C, D, or E) — the guardrail trace shows the
    blocking decision even though the Dashboard UI may still show a model response
-3. Find an **allowed** request (Prompt A) — show the full inference path
-4. Compare latency: the guardrail adds a small overhead for the LLM-as-judge check
-5. Show that **every request is traced** — blocked or not — providing a full
+4. Find an **allowed** request (Prompt A) — show the full inference path
+5. Compare latency: the guardrail adds a small overhead for the LLM-as-judge check
+6. Show that **every request is traced** — blocked or not — providing a full
    audit trail for compliance and governance
 
 ### Why this matters
@@ -523,7 +540,7 @@ The guardrail evaluation IS happening — you can confirm by:
 1. Checking the NemoGuardrails pod logs (shows `self check input: blocked`)
 2. Viewing MLflow traces (shows the block decision in the trace)
 
-**MLflow traces not showing?**
+**MLflow chat traces not showing?**
 
 ```bash
 # Check if OTEL env vars are set on the Playground pod
@@ -540,6 +557,32 @@ oc logs -n redhat-ods-applications deployment/mlflow -c mlflow --tail=20 | grep 
 # - 401 Unauthorized: SA token expired or SA lacks edit role in demo namespace
 # - SSL errors: service-ca.crt volume not mounted or wrong ConfigMap key
 # - 400 Bad Request: missing X-MLflow-Workspace or X-MLflow-Experiment-Id headers
+```
+
+**MLflow guardrail traces not showing?**
+
+```bash
+# 1. Check the startup-patch ConfigMap exists
+oc get configmap nemoguardrails-startup-patch -n demo
+
+# 2. Check it's mounted via nemoConfigs
+oc get nemoguardrails nemoguardrails -n demo \
+  -o jsonpath='{.spec.nemoConfigs}' | python3 -m json.tool
+
+# 3. Check PYTHONPATH includes /app/config/startup-patch
+oc get nemoguardrails nemoguardrails -n demo \
+  -o jsonpath='{.spec.env[?(@.name=="PYTHONPATH")].value}'
+
+# 4. Check the checks.py patch was applied at startup
+oc exec deployment/nemoguardrails -n demo -c nemo-guardrails -- \
+  python3 -c "
+with open('/app/nemoguardrails/server/checks.py') as f:
+    c = f.read()
+print('PATCHED' if 'body.guardrails.config = None' in c else 'NOT PATCHED')
+"
+
+# 5. If NOT PATCHED, re-run the setup script:
+#    ./scripts/setup-mlflow-tracing.sh --namespace demo --skip-mlflow --skip-playground
 ```
 
 **Playground not connecting to guardrails?**

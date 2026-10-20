@@ -51,6 +51,11 @@ OGX_DISABLED_INSTRUMENTORS="asgi,asyncio,asyncpg,boto3sqs,botocore,click,dbapi,g
 OGX_CERT_PATH="/etc/pki/tls/custom/service-ca.crt"
 
 # NemoGuardrails specifics
+# Note: FastAPI auto-instrumentation is DISABLED (included in the list) because
+# it creates a separate trace for every HTTP request (health checks, etc.),
+# producing excessive noise.  NemoGuardrails' built-in OpenTelemetry tracing
+# adapter (configured in config.yaml) creates the meaningful guardrail traces
+# (rail execution, LLM calls, pass/fail) and is unaffected by this setting.
 NGR_DISABLED_INSTRUMENTORS="asgi,fastapi,httpx"
 NGR_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
@@ -712,43 +717,178 @@ if best:
       fi
     fi
 
-    # Step 3.4 — Patch NemoGuardrails CR env vars (including PYTHONPATH for SDK init)
-    # Only run if OTEL env vars aren't already set
-    if [[ -z "$otel_svc" ]]; then
-    info "Step 3.4 — Patching NemoGuardrails CR env vars..."
+    # Step 3.4 — Create startup-patch ConfigMap for BFF inline-config fix
     #
-    # KEY INSIGHT: Instead of wrapping the command with opentelemetry-instrument
-    # (which the operator reverts), we set PYTHONPATH to the auto-instrumentation
-    # sitecustomize directory. Python loads sitecustomize.py at startup, which
-    # initializes the OTEL SDK — same effect, but operator-proof since it's an
-    # env var in the CR, not a command override.
+    # PROBLEM: The RHOAI Dashboard BFF sends inline guardrails config in every
+    # /v1/guardrail/checks request. The NemoGuardrails fork explicitly rejects
+    # inline configs (checks.py returns an error before any processing occurs).
+    # This means Playground guardrail checks produce no traces — the request
+    # exits before any LLM call or OTEL span is created.
+    #
+    # FIX: A sitecustomize.py that patches checks.py at Python startup to
+    # ignore the inline config and fall through to the server's default config
+    # (guardrail-placeholder). The ConfigMap is mounted via spec.nemoConfigs
+    # and loaded via PYTHONPATH — fully persistent across container restarts.
+    #
+    info "Step 3.4 — Creating startup-patch ConfigMap (BFF inline-config fix)..."
+    local startup_patch_cm="nemoguardrails-startup-patch"
+    if oc get configmap "${startup_patch_cm}" -n "${NS}" &>/dev/null; then
+      ok "ConfigMap '${startup_patch_cm}' already exists — skipping"
+    else
+      if $DRY_RUN; then
+        dry "Create ConfigMap ${startup_patch_cm} with sitecustomize.py"
+      else
+        cat <<'STARTUP_PATCH_EOF' | oc apply -n "${NS}" -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nemoguardrails-startup-patch
+  labels:
+    opendatahub.io/dashboard: "true"
+data:
+  sitecustomize.py: |
+    """Startup hook: patches checks.py to accept BFF inline config, then initializes OTEL.
+
+    The RHOAI Dashboard BFF sends inline guardrails configuration (model, prompts,
+    API key) in every /v1/guardrail/checks request. The NemoGuardrails fork rejects
+    these with 'Inline guardrails configuration is not supported'. This patch
+    neutralizes the rejection: when inline config is detected, it is set to None so
+    the server falls through to its default config (--default-config-id).
+    """
+    import os
+
+    _CHECKS_PATH = "/app/nemoguardrails/server/checks.py"
+    _OLD = (
+        '            if body.guardrails.config:\n'
+        '                yield _json_response(\n'
+        '                    _create_check_error_response(\n'
+        '                        "Inline guardrails configuration is not supported.'
+        ' Use config_id to reference a server-side configuration."\n'
+        '                    )\n'
+        '                )\n'
+        '                return'
+    )
+    _NEW = (
+        '            if body.guardrails.config:\n'
+        '                body.guardrails.config = None'
+    )
+
+    try:
+        with open(_CHECKS_PATH) as _f:
+            _content = _f.read()
+        if _OLD in _content:
+            with open(_CHECKS_PATH, "w") as _f:
+                _f.write(_content.replace(_OLD, _NEW))
+    except Exception:
+        pass
+
+    from opentelemetry.instrumentation.auto_instrumentation import initialize
+    initialize()
+STARTUP_PATCH_EOF
+        ok "ConfigMap '${startup_patch_cm}' created with sitecustomize.py"
+      fi
+    fi
+
+    # Step 3.5 — Patch NemoGuardrails CR: env vars + nemoConfigs + PYTHONPATH
+    #
+    # KEY INSIGHTS:
+    # 1. PYTHONPATH prepends /app/config/startup-patch so our sitecustomize.py
+    #    runs FIRST — it patches checks.py, then chains to OTEL initialize().
+    # 2. The startup-patch ConfigMap is mounted via spec.nemoConfigs. The
+    #    NemoGuardrails config loader ignores it (no config.yaml present).
+    # 3. The operator manages spec.env and spec.nemoConfigs on the CR, so
+    #    these changes are operator-proof and survive pod restarts.
     #
     local otel_sitecustomize="/app/.venv/lib64/python3.12/site-packages/opentelemetry/instrumentation/auto_instrumentation"
-    run "oc patch nemoguardrails ${ngr_name} -n ${NS} --type json -p '[
-  {\"op\": \"replace\", \"path\": \"/spec/env\", \"value\": [
-    {\"name\": \"OPENAI_API_KEY\", \"valueFrom\": {\"secretKeyRef\": {\"name\": \"${api_key_secret}\", \"key\": \"key\"}}},
-    {\"name\": \"PYTHONPATH\", \"value\": \"${otel_sitecustomize}\"},
-    {\"name\": \"OTEL_SERVICE_NAME\", \"value\": \"nemoguardrails\"},
-    {\"name\": \"OTEL_EXPORTER_OTLP_ENDPOINT\", \"value\": \"${MLFLOW_ENDPOINT}\"},
-    {\"name\": \"OTEL_EXPORTER_OTLP_PROTOCOL\", \"value\": \"http/protobuf\"},
-    {\"name\": \"OTEL_EXPORTER_OTLP_HEADERS\", \"valueFrom\": {\"secretKeyRef\": {\"name\": \"nemoguardrails-otel-auth\", \"key\": \"header\"}}},
-    {\"name\": \"OTEL_EXPORTER_OTLP_CERTIFICATE\", \"value\": \"${NGR_CERT_PATH}\"},
-    {\"name\": \"OTEL_TRACES_EXPORTER\", \"value\": \"otlp\"},
-    {\"name\": \"OTEL_METRICS_EXPORTER\", \"value\": \"none\"},
-    {\"name\": \"OTEL_LOGS_EXPORTER\", \"value\": \"none\"},
-    {\"name\": \"OTEL_PYTHON_DISABLED_INSTRUMENTATIONS\", \"value\": \"${NGR_DISABLED_INSTRUMENTORS}\"}
-  ]}
-]'"
-    ok "NemoGuardrails CR env patched (with PYTHONPATH for auto-instrumentation)"
-    fi  # end Step 3.4 OTEL gate
+    local startup_patch_path="/app/config/startup-patch"
 
-  # Step 3.5 — (No longer needed: PYTHONPATH replaces the command wrapper)
-  # The PYTHONPATH env var in step 3.4 initializes the OTEL SDK at Python
-  # startup via sitecustomize.py — no command override required.
-  # This is operator-proof: the env var is set in the CR, so the operator
-  # cannot revert it.
+    # Get current nemoConfigs to check if startup-patch is already present
+    local current_nemo_configs
+    current_nemo_configs=$(oc get nemoguardrails "${ngr_name}" -n "${NS}" \
+      -o jsonpath='{.spec.nemoConfigs}' 2>/dev/null || echo "[]")
+    local needs_nemo_patch=false
+    if ! echo "$current_nemo_configs" | grep -q 'startup-patch'; then
+      needs_nemo_patch=true
+    fi
 
-  # Step 3.6 — Update guardrail config (model backend + tracing)
+    # Check if PYTHONPATH already includes startup-patch
+    local current_pythonpath
+    current_pythonpath=$(oc get nemoguardrails "${ngr_name}" -n "${NS}" \
+      -o jsonpath='{.spec.env[?(@.name=="PYTHONPATH")].value}' 2>/dev/null || echo "")
+    local needs_pythonpath_patch=false
+    if ! echo "$current_pythonpath" | grep -q 'startup-patch'; then
+      needs_pythonpath_patch=true
+    fi
+
+    if [[ -z "$otel_svc" ]]; then
+      # OTEL not configured yet — full env + nemoConfigs patch
+      info "Step 3.5 — Patching NemoGuardrails CR (env + nemoConfigs)..."
+      run "oc patch nemoguardrails ${ngr_name} -n ${NS} --type merge -p '{
+  \"spec\": {
+    \"nemoConfigs\": [
+      {\"name\": \"guardrail-placeholder\", \"configMaps\": [\"guardrail-placeholder\"], \"default\": true},
+      {\"name\": \"startup-patch\", \"configMaps\": [\"nemoguardrails-startup-patch\"], \"default\": false}
+    ],
+    \"env\": [
+      {\"name\": \"OPENAI_API_KEY\", \"valueFrom\": {\"secretKeyRef\": {\"name\": \"${api_key_secret}\", \"key\": \"key\"}}},
+      {\"name\": \"PYTHONPATH\", \"value\": \"${startup_patch_path}:${otel_sitecustomize}\"},
+      {\"name\": \"OTEL_SERVICE_NAME\", \"value\": \"nemoguardrails\"},
+      {\"name\": \"OTEL_EXPORTER_OTLP_ENDPOINT\", \"value\": \"${MLFLOW_ENDPOINT}\"},
+      {\"name\": \"OTEL_EXPORTER_OTLP_PROTOCOL\", \"value\": \"http/protobuf\"},
+      {\"name\": \"OTEL_EXPORTER_OTLP_HEADERS\", \"valueFrom\": {\"secretKeyRef\": {\"name\": \"nemoguardrails-otel-auth\", \"key\": \"header\"}}},
+      {\"name\": \"OTEL_EXPORTER_OTLP_CERTIFICATE\", \"value\": \"${NGR_CERT_PATH}\"},
+      {\"name\": \"OTEL_TRACES_EXPORTER\", \"value\": \"otlp\"},
+      {\"name\": \"OTEL_METRICS_EXPORTER\", \"value\": \"none\"},
+      {\"name\": \"OTEL_LOGS_EXPORTER\", \"value\": \"none\"},
+      {\"name\": \"OTEL_PYTHON_DISABLED_INSTRUMENTATIONS\", \"value\": \"${NGR_DISABLED_INSTRUMENTORS}\"}
+    ]
+  }
+}'"
+      ok "NemoGuardrails CR patched (PYTHONPATH, nemoConfigs, env)"
+
+    elif $needs_nemo_patch || $needs_pythonpath_patch; then
+      # OTEL already configured but startup-patch not yet applied
+      info "Step 3.5 — Adding startup-patch to existing NemoGuardrails CR..."
+
+      # Build a merge patch that adds nemoConfigs and updates PYTHONPATH
+      # while preserving existing env vars
+      local patch_json
+      patch_json=$(oc get nemoguardrails "${ngr_name}" -n "${NS}" -o json 2>/dev/null | python3 -c "
+import sys, json
+cr = json.load(sys.stdin)
+env = cr.get('spec', {}).get('env', [])
+nemo_configs = cr.get('spec', {}).get('nemoConfigs', [])
+
+# Update PYTHONPATH to prepend startup-patch path
+for e in env:
+    if e.get('name') == 'PYTHONPATH':
+        val = e.get('value', '')
+        if '${startup_patch_path}' not in val:
+            e['value'] = '${startup_patch_path}:' + val
+        break
+
+# Add startup-patch to nemoConfigs if not present
+has_startup = any(c.get('name') == 'startup-patch' for c in nemo_configs)
+if not has_startup:
+    nemo_configs.append({
+        'name': 'startup-patch',
+        'configMaps': ['nemoguardrails-startup-patch'],
+        'default': False
+    })
+
+patch = {'spec': {'env': env, 'nemoConfigs': nemo_configs}}
+print(json.dumps(patch))
+")
+      run "oc patch nemoguardrails ${ngr_name} -n ${NS} --type merge -p '${patch_json}'"
+      ok "startup-patch added to NemoGuardrails CR (nemoConfigs + PYTHONPATH)"
+
+    else
+      ok "NemoGuardrails CR already has startup-patch — skipping Step 3.5"
+    fi
+
+  # Step 3.6 — (handled above: PYTHONPATH + nemoConfigs replaces command wrapper)
+
+  # Step 3.7 — Update guardrail config (model backend + tracing)
   info "Step 3.6 — Updating guardrail config..."
   local config_yaml
   config_yaml=$(oc get configmap guardrail-placeholder -n "${NS}" \
@@ -832,8 +972,8 @@ json.dump(cm, sys.stdout)
     fi
   fi
 
-  # Step 3.7 — Wait for rollout
-  info "Step 3.7 — Waiting for NemoGuardrails rollout..."
+  # Step 3.8 — Wait for rollout
+  info "Step 3.8 — Waiting for NemoGuardrails rollout..."
   if ! $DRY_RUN; then
     oc rollout status deployment/"${deploy_name}" -n "${NS}" --timeout=120s 2>/dev/null || true
   else
