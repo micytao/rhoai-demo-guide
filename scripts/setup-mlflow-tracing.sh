@@ -45,6 +45,10 @@ EXPERIMENT_NAME="guardrails-playground"
 # OGX specifics
 OGX_DISABLED_INSTRUMENTORS="asgi,asyncio,asyncpg,boto3sqs,botocore,click,dbapi,grpc,httpx,jinja2,logging,pymongo,redis,requests,sqlalchemy,sqlite3,starlette,system-metrics,threading,tortoiseorm,urllib,urllib3,wsgi"
 OGX_CERT_PATH="/etc/pki/tls/custom/service-ca.crt"
+# Exclude health-check and metadata URLs from tracing to avoid noise.
+# These fire every few seconds and produce tiny (3-5 ms) spans that drown out
+# meaningful chat-completion traces.
+OGX_EXCLUDED_URLS="/v1/health,/v1/providers,/v1/version,/v1/models"
 
 # NemoGuardrails specifics
 # Note: FastAPI auto-instrumentation is DISABLED (included in the list) because
@@ -1107,6 +1111,7 @@ otel_vars = [
     {'name': 'OTEL_SEMCONV_STABILITY_OPT_IN', 'value': 'gen_ai_latest_experimental'},
     {'name': 'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT', 'value': 'span_only'},
     {'name': 'OTEL_PYTHON_DISABLED_INSTRUMENTATIONS', 'value': '${OGX_DISABLED_INSTRUMENTORS}'},
+    {'name': 'OTEL_PYTHON_FASTAPI_EXCLUDED_URLS', 'value': '${OGX_EXCLUDED_URLS}'},
     {'name': 'OTEL_TRACES_EXPORTER', 'value': 'otlp'},
     {'name': 'OTEL_METRICS_EXPORTER', 'value': 'none'},
     {'name': 'OTEL_LOGS_EXPORTER', 'value': 'none'},
