@@ -43,7 +43,11 @@ MLFLOW_ENDPOINT="https://mlflow.${MLFLOW_NS}.svc:8443"
 EXPERIMENT_NAME="guardrails-playground"
 
 # OGX specifics
-OGX_DISABLED_INSTRUMENTORS="asgi,asyncio,asyncpg,boto3sqs,botocore,click,dbapi,grpc,httpx,jinja2,logging,pymongo,redis,requests,sqlalchemy,sqlite3,starlette,system-metrics,threading,tortoiseorm,urllib,urllib3,wsgi"
+# fastapi is DISABLED because the ASGI middleware span wraps the full streaming
+# response lifecycle and fails to close in async contexts, leaving traces stuck
+# "in progress" in MLflow.  httpx2 creates noise spans for each outgoing HTTP
+# call.  The openai instrumentor (NOT listed) provides the meaningful LLM spans.
+OGX_DISABLED_INSTRUMENTORS="asgi,asyncio,asyncpg,boto3sqs,botocore,click,dbapi,fastapi,grpc,httpx,httpx2,jinja2,logging,pymongo,redis,requests,sqlalchemy,sqlite3,starlette,system-metrics,threading,tortoiseorm,urllib,urllib3,wsgi"
 OGX_CERT_PATH="/etc/pki/tls/custom/service-ca.crt"
 # Exclude health-check and metadata URLs from tracing to avoid noise.
 # These fire every few seconds and produce tiny (3-5 ms) spans that drown out
