@@ -56,7 +56,7 @@ OGX_EXCLUDED_URLS="/v1/health,/v1/providers,/v1/version,/v1/models"
 # producing excessive noise.  NemoGuardrails' built-in OpenTelemetry tracing
 # adapter (configured in config.yaml) creates the meaningful guardrail traces
 # (rail execution, LLM calls, pass/fail) and is unaffected by this setting.
-NGR_DISABLED_INSTRUMENTORS="asgi,fastapi,httpx"
+NGR_DISABLED_INSTRUMENTORS="asgi,fastapi,httpx,httpx2"
 NGR_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
 # ──────────────────────────────────────────────────────────────────────
