@@ -1356,29 +1356,18 @@ metadata:
     opendatahub.io/dashboard: "true"
 data:
   sitecustomize.py: |
-    """Startup hook: patches checks.py to accept BFF inline config and only check
-    the last message (avoiding duplicate traces for conversation history).
+    """Startup hook: patches checks.py to accept BFF inline config, then initializes OTEL.
 
-    Patch 1 — Inline config rejection:
-      The RHOAI Dashboard BFF sends inline guardrails configuration in every
-      /v1/guardrail/checks request. The NemoGuardrails fork rejects these.
-      This patch sets inline config to None so the server falls through to
-      its default config (--default-config-id).
-
-    Patch 2 — Last-message-only checking:
-      The BFF sends the full conversation history in each check request.
-      NemoGuardrails loops over EVERY message and calls generate_async for
-      each one, producing a separate OTEL trace per message. Previous messages
-      were already checked when they were first submitted, so rechecking is
-      redundant noise. This patch replaces the enumerate(body.messages) loop
-      to only process the last message, producing exactly 1 trace per check.
+    The RHOAI Dashboard BFF sends inline guardrails configuration (model, prompts,
+    API key) in every /v1/guardrail/checks request. The NemoGuardrails fork rejects
+    these with 'Inline guardrails configuration is not supported'. This patch
+    neutralizes the rejection: when inline config is detected, it is set to None so
+    the server falls through to its default config (--default-config-id).
     """
     import os
 
     _CHECKS_PATH = "/app/nemoguardrails/server/checks.py"
-
-    # ── Patch 1: Neutralize inline config rejection ──────────────
-    _OLD_INLINE = (
+    _OLD = (
         '            if body.guardrails.config:\n'
         '                yield _json_response(\n'
         '                    _create_check_error_response(\n'
@@ -1388,32 +1377,17 @@ data:
         '                )\n'
         '                return'
     )
-    _NEW_INLINE = (
+    _NEW = (
         '            if body.guardrails.config:\n'
         '                body.guardrails.config = None'
-    )
-
-    # ── Patch 2: Only check the last message ─────────────────────
-    _OLD_LOOP = '            for msg_idx, msg in enumerate(body.messages):'
-    _NEW_LOOP = (
-        '            # PATCH: Only check the last message — previous messages in the\n'
-        '            # conversation were already checked when first submitted.\n'
-        '            for msg_idx, msg in [(len(body.messages) - 1, body.messages[-1])]:'
     )
 
     try:
         with open(_CHECKS_PATH) as _f:
             _content = _f.read()
-        _modified = False
-        if _OLD_INLINE in _content:
-            _content = _content.replace(_OLD_INLINE, _NEW_INLINE)
-            _modified = True
-        if _OLD_LOOP in _content:
-            _content = _content.replace(_OLD_LOOP, _NEW_LOOP)
-            _modified = True
-        if _modified:
+        if _OLD in _content:
             with open(_CHECKS_PATH, "w") as _f:
-                _f.write(_content)
+                _f.write(_content.replace(_OLD, _NEW))
     except Exception:
         pass
 
