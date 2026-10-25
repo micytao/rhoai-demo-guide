@@ -1,0 +1,45 @@
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: LMEvalJob
+metadata:
+  name: gemma4-gsm8k-eval
+  namespace: user-micyang
+spec:
+  model: local-chat-completions
+  modelArgs:
+    - name: model
+      value: publishers/prelude-maas/models/gemma4
+    - name: base_url
+      value: https://maas.apps.ocp.cloud.rhai-tmm.dev/v1/chat/completions
+    - name: num_concurrent
+      value: "4"
+    - name: max_retries
+      value: "5"
+    - name: tokenized_requests
+      value: "False"
+  taskList:
+    taskNames:
+      - gsm8k
+  limit: "20"
+  logSamples: true
+  batchSize: "1"
+  allowOnline: true
+  allowCodeExecution: true
+  chatTemplate:
+    enabled: true
+  pod:
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: NotIn
+                  values:
+                    - ocp-j8fns-worker-cpu-3-hd7lb
+    container:
+      env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: eval-hub-api-key
+              key: api-key
